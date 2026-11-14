@@ -32,14 +32,24 @@ chk("桥暴露 JS 就绪冲刷", "carPlayJSReady" in bm)
 # 2) CarPlaySceneDelegate
 ch = io.open(os.path.join(ROOT, "ios", "MusicFree", "CarPlaySceneDelegate.h"), encoding="utf-8").read()
 cm = io.open(os.path.join(ROOT, "ios", "MusicFree", "CarPlaySceneDelegate.m"), encoding="utf-8").read()
+# 去注释后的纯代码，用于负向断言（注释里允许出现日志原文）
+cm_code = re.sub(r"/\*[\s\S]*?\*/", "", cm)
+cm_code = re.sub(r"//.*$", "", cm_code, flags=re.M)
 chk("用 CPListItem.handler（稳定 API）", "item.handler" in cm)
 chk("不用 CPListTemplateDelegate（签名差异）", "didSelectListItem" not in cm)
 chk("原生占位首屏", "placeholderSections" in cm and "正在加载歌单" in cm)
-chk("root 幂等 + animated:NO", "installRootIfNeeded" in cm and "sRootedController == ic" in cm and "animated:NO" in cm)
+chk("root 幂等 + animated:NO", "installRootIfNeeded" in cm and "_rootInstalledFor == ic" in cm and "animated:NO" in cm)
 chk("root 带 completion", "setRootTemplate:list" in cm and "completion:^" in cm and "BOOL success" in cm)
-chk("root completion 超时自愈", "scheduleRootWatchdogForController" in cm and "root watchdog fired" in cm)
-chk("root 成功标记 _rootApplied", "_rootApplied" in cm and "self->_rootApplied = YES" in cm)
-chk("in-flight 不再永久锁死", "retry anyway" in cm and "_lastRootInstallAt" in cm)
+chk("watchdog 只诊断不重装", "scheduleRootWatchdogForController" in cm and "watchdog diagnose" in cm
+    and "root watchdog fired" not in cm_code)
+chk("root 成功标记 _rootApplied", "_rootApplied" in cm and "self->_rootApplied = success" in cm)
+chk("一连接只装一次 root（不死循环重发）",
+    "one-shot root install armed" in cm_code
+    and "no retry (waiting framework)" in cm_code
+    and "retry anyway" not in cm_code
+    and "attempts exhausted" not in cm_code)
+chk("生命周期不重装 root", "keep root, no reinstall" in cm_code
+    and "retry install" not in cm_code)
 chk("scene 生命周期重绑 controller", "recoverTemplateScene" in cm and "sceneDidBecomeActive" in cm and "interfaceControllerFromScene" in cm)
 chk("点歌单 push", "pushTracksForSheet" in cm)
 chk("点曲目发播放事件", "emitPlayTrack" in cm)
@@ -47,9 +57,9 @@ chk("数据到达只 updateSections", "handleDataUpdate" in cm and "updateSectio
 chk("同一连接不重建 root", "root already installed, updateSections only" in cm)
 chk("observer 幂等注册", "sDataObserverToken" in cm and "registerDataObserverIfNeeded" in cm)
 chk("disconnect 配对清理", "unregisterDataObserver" in cm and "didDisconnectInterfaceController" in cm)
-cm_code = re.sub(r"/\*[\s\S]*?\*/", "", cm)
-cm_code = re.sub(r"//.*$", "", cm_code, flags=re.M)
 chk("无老危险 init 签名", "initWithText:detailText:image:accessoryType:" not in cm_code)
+chk("框架已有 root 时接管不重设", "adopt without setRootTemplate" in cm_code)
+chk("未握手不 updateSections", "if (!_rootApplied) {" in cm_code)
 
 # 3) pbxproj
 pbx = io.open(os.path.join(ROOT, "ios", "MusicFree.xcodeproj", "project.pbxproj"), encoding="utf-8").read()
