@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142615"
+EXPECTED_VERSION = "11142616"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -26,9 +26,10 @@ BINARY_MARKERS = [
     b"one-shot root install armed",
     b"no retry (waiting framework)",
     b"keep root, no reinstall",
-    b"adopt without setRootTemplate",
     b"framework confirms root is top",
     b"keep polling (no reinstall)",
+    b"sync probe unlocked",
+    b"template handshake not settled yet",
     b"recoverTemplateScene",
     b"rebind controller",
     b"carPlayJSReady",
@@ -39,11 +40,14 @@ BINARY_MARKERS = [
     b"MFCarPlayDataDidUpdate",
 ]
 
-# 旧版的死循环标记，产物里绝不能再出现
+# 旧版已证伪/致命的标记，产物里绝不能再出现
 FORBIDDEN_BINARY_MARKERS = [
     b"retry anyway",
     b"attempts exhausted",
     b"root watchdog fired",
+    # 11142616：didConnect 期 topTemplate 同步读是打断 template 连接的真凶
+    b"adopt without setRootTemplate",
+    b"framework already has topTemplate",
 ]
 
 JS_MARKERS = [

@@ -1,59 +1,68 @@
 /*
- * CarPlaySceneDelegate.m — Phase 1 one-shot root
+ * CarPlaySceneDelegate.m — Phase 1 one-shot root（同步 XPC 隔离版）
  *
- * 真机日志（2026-11-15 01:01:15, iOS 16.1.1, 构建 11142415）结论：
+ * ============================ 三代真机日志演进 ============================
  *
- *   [MusicFree][CarPlay] connected (phase1) controller=0x2829d5080 attempts=0 applied=0
- *   [MusicFree][CarPlay] native placeholder root installed (animated=NO) attempt=1   <- 第 1 次
- *   [MusicFree][CarPlay] root not applied yet (willEnterForeground), retry install
- *   [MusicFree][CarPlay] native placeholder root installed (animated=NO) attempt=1   <- 第 2 次
- *   [MusicFree][CarPlay] root not applied yet (didBecomeActive), retry install
- *   [MusicFree][CarPlay] native placeholder root installed (animated=NO) attempt=1   <- 第 3 次
- *   MusicFree(CarPlay) <Error>: Connection interrupted
- *   MusicFree(CarPlay) <Error>: Error accessing synchronous template provider
- *   MusicFree(CarPlay) <Error>: Connection invalidated
- *   [MusicFree][CarPlay] root watchdog fired attempt=1..6 applied=0, recover
- *   [MusicFree][CarPlay] setRootTemplate attempts exhausted, keep placeholder
+ * [11142415] 死因：同一秒内对同一个 CPInterfaceController 连发 3~9 次
+ *   setRootTemplate:。CarPlay 框架判定协议违规，直接 invalidate 整条连接。
+ *   修复：一个 controller 生命周期内 setRootTemplate 只发一次。
  *
- * 死因：**同一秒内对同一个 CPInterfaceController 调了三~九次 setRootTemplate:**。
- *   - setRootTemplate 是异步 XPC 事务；握手还没完成就连发多个 root 变更请求，
- *     CarPlay 框架判定协议违规 -> 直接 invalidate 掉整条 template 连接。
- *   - completion 一次都没回来（日志里 `setRootTemplate success=` 完全缺失），
- *     旧代码于是认为"没生效"，在 sceneWillEnterForeground / sceneDidBecomeActive
- *     里把计数清零再装一次，watchdog 又装六次 -> 把死连接彻底打死 -> 永久黑屏。
- *   - `Error accessing synchronous template provider` 正是连接已断后框架取不到
- *     root template provider 的报错，说明画面从来没拿到过一份稳定的 root。
+ * [11142515] one-shot 生效（`native placeholder root installed` 只 1 次，
+ *   生命周期全是 `keep root, no reinstall`），但：
+ *     - `setRootTemplate success=` 一次都没出现
+ *     - watchdog 打印 `applied=0 inFlight=1` => completion 闭包从未被调用
+ *     - 且 updateSections: 被 `_rootApplied` 把住，而它只由 completion 置位
+ *       => completion 不回 = 永远不推内容（自锁）
+ *   修复：改用 `topTemplate` 作为框架权威信号，解除 `_rootApplied` 闸门。
  *
- * 修复原则（本文件的核心不变量）：
- *   1) **一个 CPInterfaceController 生命周期内，setRootTemplate: 只允许调用一次。**
- *      以 `_rootInstalledFor` 记住已经装过 root 的 controller 身份；
- *      同一 controller 的后续任何调用一律只打日志、绝不重发。
- *   2) **scene 生命周期（didBecomeActive / willEnterForeground / didEnterBackground）
- *      绝不重装 root。** 只有 controller 对象身份真的换了（= 系统给了新连接）才装。
- *   3) watchdog 只做诊断（`watchdog diagnose`），**不再重装**。
- *      连接断了就等系统重新 didConnect，那时 controller 身份会变，才是合法重装时机。
- *   4) RN 数据到达后只 updateSections:，绝不重新 setRootTemplate。
- *   5) observer 进程级只注册一次；didDisconnect 配对移除并清空状态。
- *   6) 冷启动有限次重发 requestSheets，RN 就绪后自动回填。
+ * [11142615] 真机日志（2026-11-15 01:55:42, iOS 16.1.1, pid 4543）抓到真凶：
  *
- * ---- 11142515 真机日志（2026-11-15 01:32:01, pid 4127）二次修正 ----
- *   one-shot 生效：`native placeholder root installed` 只出现 1 次，
- *   生命周期全部是 `keep root, no reinstall`，重装风暴确认消除。
- *   但：
- *     - `setRootTemplate success=` 依旧一次都没出现
- *     - watchdog 打印 `applied=0 inFlight=1`  => completion 闭包从未被调用
- *     - 更严重：11142515 里 updateSections: 被 `_rootApplied` 把住，
- *       而 `_rootApplied` 只由 completion 置位 => completion 不回 =
- *       永远不推内容 = 即使 root 被接受也照样黑屏/空屏（自锁 bug）
+ *   MusicFree(CarPlay)  <Notice>: App supports CPTemplateApplicationScene
+ *                                 method without window
+ *   MusicFree[4543]     <Notice>: [MusicFree][CarPlay] connected (phase1)
+ *                                 controller=0x2818352c0 installedFor=0x0 applied=0
+ *   MusicFree[4543]     <Notice>: [MusicFree][CarPlay] data observer registered
+ *   MusicFree(CarPlay)  <Error> : Connection interrupted
+ *   MusicFree(CarPlay)  <Error> : Error accessing synchronous template provider
+ *   MusicFree[4543]     <Notice>: [MusicFree][CarPlay] one-shot root install armed
+ *   MusicFree(CarPlay)  <Notice>: Application declares audio entitlement.
+ *   MusicFree(CarPlay)  <Notice>: Setting root template <private> animated 0
+ *   MusicFree[4543]     <Notice>: [MusicFree][CarPlay] native placeholder root
+ *                                 installed (animated=NO)
+ *   MusicFree(CarPlay)  <Error> : Connection interrupted        <- 第二次
+ *   MusicFree(CarPlay)  <Error> : Connection invalidated
+ *   MusicFree[4543]     <Notice>: lifecycle: keep root, no reinstall
+ *                                 (willEnterForeground) applied=0 confirmed=0
+ *   MusicFree[4543]     <Notice>: watchdog round=1..8: applied=0 inFlight=1
  *
- *   因此本次改为「不再依赖 completion 判定成功」，改用框架的**可观测真相**：
- *   - `interfaceController.topTemplate` 是否已经是我们这个 CPListTemplate
- *     实例 —— 这是唯一权威信号（框架接受后它必然成为 top）
- *   - 轮询 + 生命周期 + 数据到达三个时机都去核对一次，一旦吻合就
- *     置 `_rootApplied = YES` 并立刻推 sections（解除自锁）
- *   - setRootTemplate 仍然只发一次（不变量不变），只是不再等它的回调
- *   - `refreshRootSections` 不再被 `_rootApplied` 硬阻断，改为
- *     「topTemplate 是我们自己的 list 才推」这一更宽松但安全的判据
+ *   **`Connection interrupted` 出现在 `one-shot root install armed` 之前。**
+ *   即：didConnect 回调进入后，`installRootIfNeeded` 第一件事就是
+ *   `if (ic.topTemplate != nil)` —— 而 `CPInterfaceController.topTemplate`
+ *   是一次**同步 XPC 往返**（要向 CarPlay 服务端取当前栈顶模板）。
+ *   此刻 didConnect 的握手事务尚未结算，同一线程上再发起同步 XPC：
+ *     -> 框架报 `Error accessing synchronous template provider`
+ *     -> 握手事务超时 -> `Connection interrupted` -> `Connection invalidated`
+ *   连接一死，`topTemplate` 永远是 nil、completion 永远不回调、
+ *   `updateSections:` 推给一个已死的控制器 -> 永久黑屏。
+ *
+ *   => 真正元凶不是重装风暴，也不是 entitlement，是**在 didConnect 内
+ *      同步读取 interfaceController 的同步属性**。
+ *
+ * ============================ 本文件的不变量 ============================
+ *   1) 一个 CPInterfaceController 生命周期内，setRootTemplate: 只发一次。
+ *   2) scene 生命周期（didBecomeActive / willEnterForeground /
+ *      didEnterBackground）绝不重装 root，只做诊断与内容刷新。
+ *   3) watchdog 只诊断，不重装。
+ *   4) **`_templateReady == NO` 期间，任何代码路径都不许读
+ *      `interfaceController.topTemplate`。** 该标志由 watchdog 第一轮
+ *      （didConnect 之后 1.5s）置 YES —— 那时握手已结算，同步读安全。
+ *      这是 11142615 黑屏的直接修复。
+ *   5) `didConnectInterfaceController:` 内只做「记录 controller + 注册
+ *      observer」，root 安装与数据请求全部 dispatch_async 到下一轮
+ *      runloop，让握手事务先干净结算。
+ *   6) `didConnectInterfaceController:` 内**绝不读写 interfaceController 的
+ *      任何同步属性**（topTemplate 就是同步 XPC 往返）。root 安装与数据请求
+ *      全部 dispatch_async 到下一轮 runloop，让握手事务先干净结算。
  *
  * 只用 iOS 14+ 稳定 API（CPListItem.handler / updateSections:），规避
  * initWithText:detailText:image:accessoryType: 的 SDK 签名差异。
@@ -69,6 +78,8 @@ static __weak MFCarPlaySceneDelegate *sActiveDelegate = nil;
 static id<NSObject> sDataObserverToken = nil;
 
 @interface MFCarPlaySceneDelegate ()
+- (void)attachInterfaceController:(CPInterfaceController *)interfaceController
+                            scene:(CPTemplateApplicationScene *)scene;
 - (void)registerDataObserverIfNeeded;
 - (void)unregisterDataObserver;
 - (NSArray<NSDictionary *> *)sheets;
@@ -98,6 +109,8 @@ static id<NSObject> sDataObserverToken = nil;
     BOOL _sheetsReceived;
     BOOL _rootInstallInFlight;
     BOOL _rootApplied;
+    /* 握手已结算、允许做同步 XPC 读（topTemplate）。见不变量 4。 */
+    BOOL _templateReady;
     BOOL _observerOwnedByMe;
     /* 已经对哪个 controller 调用过 setRootTemplate（一个 controller 只准一次） */
     __weak CPInterfaceController *_rootInstalledFor;
@@ -106,32 +119,17 @@ static id<NSObject> sDataObserverToken = nil;
 
 #pragma mark - CPTemplateApplicationSceneDelegate
 
+/*
+ * 只保留不带 window 的签名 —— 11142615 日志已证明这条路径能进来
+ * （`[MusicFree][CarPlay] connected (phase1)` 打印了）。
+ * 框架那句 `App supports CPTemplateApplicationScene method without window`
+ * 是 Notice 级的信息提示（说明走模板渲染），不是错误，不必改签名。
+ * 本次唯一的实质修复是：**本回调内不再做任何同步 XPC 读**。
+ */
 - (void)templateApplicationScene:(CPTemplateApplicationScene *)templateApplicationScene
     didConnectInterfaceController:(CPInterfaceController *)interfaceController
 {
-    _templateScene = templateApplicationScene;
-    self.interfaceController = interfaceController;
-    sActiveDelegate = self;
-
-    /* 新连接（controller 身份变化）：旧的一次性标记作废，允许新 controller 装一次 root */
-    if (_rootInstalledFor != interfaceController) {
-        _rootInstalledFor = nil;
-        _rootInstallInFlight = NO;
-        _rootApplied = NO;
-    }
-    NSLog(@"[MusicFree][CarPlay] connected (phase1) controller=%p installedFor=%p applied=%d",
-          (__bridge void *)interfaceController,
-          (__bridge void *)_rootInstalledFor,
-          _rootApplied);
-
-    [self registerDataObserverIfNeeded];
-
-    /* 同步装原生占位 root，完全不碰 RN —— 本次连接只会走到真正 setRootTemplate 一次 */
-    [self installRootIfNeeded];
-
-    /* 冷启动 RN 未就绪：立即请求一次 + 有限次重发，就绪方自动回填 */
-    [self requestSheetsNow];
-    [self scheduleRequestSheetsRetries];
+    [self attachInterfaceController:interfaceController scene:templateApplicationScene];
 }
 
 - (void)templateApplicationScene:(CPTemplateApplicationScene *)templateApplicationScene
@@ -156,6 +154,52 @@ static id<NSObject> sDataObserverToken = nil;
     _sheetsReceived = NO;
     _rootInstallInFlight = NO;
     _rootApplied = NO;
+    _templateReady = NO;
+}
+
+/*
+ * didConnect 的共享实现。铁律：
+ *   **函数体内绝不读写 interfaceController 的任何同步属性。**
+ *   topTemplate 是同步 XPC 往返，在握手未结算时读它 = 直接打断连接。
+ *   root 安装 / 数据请求全部推到下一轮 runloop。
+ */
+- (void)attachInterfaceController:(CPInterfaceController *)interfaceController
+                            scene:(CPTemplateApplicationScene *)scene
+{
+    _templateScene = scene;
+    self.interfaceController = interfaceController;
+    sActiveDelegate = self;
+
+    /* 新连接（controller 身份变化）：旧的一次性标记作废，允许新 controller 装一次 root */
+    if (_rootInstalledFor != interfaceController) {
+        _rootInstalledFor = nil;
+        _rootInstallInFlight = NO;
+        _rootApplied = NO;
+        _templateReady = NO;
+    }
+    NSLog(@"[MusicFree][CarPlay] connected (phase1) controller=%p installedFor=%p applied=%d ready=%d",
+          (__bridge void *)interfaceController,
+          (__bridge void *)_rootInstalledFor,
+          _rootApplied,
+          _templateReady);
+
+    [self registerDataObserverIfNeeded];
+
+    /*
+     * 关键修复：让 didConnect 立刻返回，握手事务干净结算。
+     * 下一轮 runloop 才碰 controller（此时仍不读 topTemplate，
+     * 只调异步的 setRootTemplate:）。
+     */
+    __weak __typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        __strong __typeof(weakSelf) self = weakSelf;
+        if (!self || self.interfaceController != interfaceController) {
+            return;
+        }
+        [self installRootIfNeeded];
+        [self requestSheetsNow];
+        [self scheduleRequestSheetsRetries];
+    });
 }
 
 #pragma mark - UIScene 生命周期（只重绑，不重装）
@@ -179,6 +223,8 @@ static id<NSObject> sDataObserverToken = nil;
  *   a) controller 对象身份换了 -> 视为全新连接，重置一次性标记并装 root（合法）
  *   b) controller 身份没换 -> 什么都不装，只刷新已应用的内容
  * 绝不再因为 "_rootApplied == NO" 就重装 —— 那正是 11142415 打死连接的元凶。
+ * syncAppliedStateFromFramework 内部有 _templateReady 门，握手未完成时不会
+ * 触碰 topTemplate。
  */
 - (void)recoverTemplateScene:(UIScene *)scene reason:(NSString *)reason {
     if (![scene isKindOfClass:[CPTemplateApplicationScene class]]) {
@@ -198,16 +244,24 @@ static id<NSObject> sDataObserverToken = nil;
         _rootList = nil;
         _rootInstallInFlight = NO;
         _rootApplied = NO;
+        _templateReady = NO;
         [self registerDataObserverIfNeeded];
-        [self installRootIfNeeded];
-        [self requestSheetsNow];
+        __weak __typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong __typeof(weakSelf) self = weakSelf;
+            if (!self || self.interfaceController != sceneIC) {
+                return;
+            }
+            [self installRootIfNeeded];
+            [self requestSheetsNow];
+        });
         return;
     }
 
     /* 同一 controller：绝不重装 root，但每次生命周期都向框架核对一次是否已被接受 */
     BOOL confirmed = [self syncAppliedStateFromFramework];
-    NSLog(@"[MusicFree][CarPlay] lifecycle: keep root, no reinstall (%@) applied=%d confirmed=%d",
-          reason, _rootApplied, confirmed);
+    NSLog(@"[MusicFree][CarPlay] lifecycle: keep root, no reinstall (%@) applied=%d confirmed=%d ready=%d",
+          reason, _rootApplied, confirmed, _templateReady);
     if (confirmed) {
         [self refreshRootSections];
     }
@@ -327,7 +381,7 @@ static id<NSObject> sDataObserverToken = nil;
     return @[[[CPListSection alloc] initWithItems:items]];
 }
 
-#pragma mark - Root Template（一连接只装一次 / completion / animated:NO）
+#pragma mark - Root Template（一连接只装一次 / animated:NO / 零同步读）
 
 - (void)installRootIfNeeded {
     CPInterfaceController *ic = self.interfaceController;
@@ -337,7 +391,8 @@ static id<NSObject> sDataObserverToken = nil;
 
     /*
      * 不变量 1：同一个 controller 只装一次。
-     * 无论上次成功还是失败，都绝不再发 setRootTemplate —— 重发会直接打死 XPC 连接。
+     * 无论上次成功还是失败，都绝不再发 setRootTemplate —— 重发会打死 XPC 连接。
+     * syncAppliedStateFromFramework 已含 _templateReady 门，未就绪时零同步读。
      */
     if (_rootInstalledFor == ic) {
         if ([self syncAppliedStateFromFramework]) {
@@ -349,28 +404,18 @@ static id<NSObject> sDataObserverToken = nil;
         return;
     }
 
-    /* 不变量 2：同一轮并发调用直接挡掉，不做时间窗"retry anyway" */
+    /* 不变量 2：同一轮并发调用直接挡掉 */
     if (_rootInstallInFlight) {
         NSLog(@"[MusicFree][CarPlay] root install in flight, skip duplicate");
         return;
     }
 
-    /* 框架侧已经有 root（例如系统恢复）：直接接管它，绝不再 setRootTemplate */
-    if (ic.topTemplate != nil) {
-        NSLog(@"[MusicFree][CarPlay] framework already has topTemplate=%p, adopt without setRootTemplate",
-              (__bridge void *)ic.topTemplate);
-        _rootInstalledFor = ic;
-        sRootedController = ic;
-        _rootInstallInFlight = NO;
-        _rootApplied = YES;
-        /* 接管成 _rootList，这样后面能靠 updateSections: 填内容，不用重建导航 */
-        if ([ic.topTemplate isKindOfClass:[CPListTemplate class]]) {
-            _rootList = (CPListTemplate *)ic.topTemplate;
-            [self refreshRootSections];
-        }
-        return;
-    }
-
+    /*
+     * 注意：这里**故意不读 ic.topTemplate**。
+     * 11142615 日志证明在 didConnect 后立刻同步读 topTemplate 会让框架报
+     * `Error accessing synchronous template provider` 并 `Connection interrupted`。
+     * 若要接管系统已有 root，交给 watchdog（1.5s 后 _templateReady=YES）处理。
+     */
     _rootInstalledFor = ic;
     sRootedController = ic;
     _rootInstallInFlight = YES;
@@ -393,12 +438,14 @@ static id<NSObject> sDataObserverToken = nil;
                        success, error.localizedDescription);
                  self->_rootInstallInFlight = NO;
                  if (!success) {
-                     /* completion 说失败，但框架真相仍以 topTemplate 为准，回头核对一次 */
+                     /* completion 说失败，但框架真相仍以 topTemplate 为准（需 ready） */
                      [self syncAppliedStateFromFramework];
                      return;
                  }
                  self->_rootApplied = YES;
-                 [self refreshRootSections];
+                 if (self->_templateReady) {
+                     [self refreshRootSections];
+                 }
              }];
     NSLog(@"[MusicFree][CarPlay] native placeholder root installed (animated=NO)");
 
@@ -409,13 +456,15 @@ static id<NSObject> sDataObserverToken = nil;
  * 框架真相核对：唯一权威信号是 interfaceController.topTemplate 是否已经
  * 是我们自己创建的 CPListTemplate 实例。
  *
- * 11142515 真机日志证明 completion 闭包可能永远不回调（watchdog 时
- * applied=0 inFlight=1），而旧代码把 updateSections: 用 _rootApplied 把住，
- * 于是 completion 不回 = 永远不推内容 = 自锁。
- * 这里改为主动向框架要答案：一旦 topTemplate == _rootList，立即认定成功
- * 并解除推送闸门。
+ * **topTemplate 是同步 XPC 读**。11142615 真机日志证明在 didConnect 握手
+ * 未结算时读它，框架会报 `Error accessing synchronous template provider`
+ * 并立刻 `Connection interrupted` -> `Connection invalidated`，整条 template
+ * 连接报废。因此这里加 _templateReady 硬门：未就绪一律不读、直接返回 NO。
  */
 - (BOOL)syncAppliedStateFromFramework {
+    if (!_templateReady) {
+        return NO;
+    }
     CPInterfaceController *ic = self.interfaceController;
     if (!ic) {
         return NO;
@@ -433,10 +482,12 @@ static id<NSObject> sDataObserverToken = nil;
 }
 
 /*
- * completion 可能永远不回调（真机已证实 inFlight 长期为 1）。
- * watchdog 绝不重装 root（重装会打死 XPC 连接），只做两件事：
- *   a) 向框架核对 topTemplate，若已是我们自己的 list -> 认定成功并立即推内容
- *   b) 未确认则按 1.5s 间隔继续核对，最多 8 次（约 12s），全程零 setRootTemplate
+ * completion 可能永远不回调。watchdog 绝不重装 root（重装会打死 XPC 连接），
+ * 只做两件事：
+ *   a) 第一轮把 _templateReady 置 YES（didConnect 之后 1.5s，握手已结算），
+ *      解锁同步读
+ *   b) 之后向框架核对 topTemplate，若已是我们自己的 list -> 认定成功并推内容；
+ *      未确认则按 1.5s 间隔继续核对，最多 10 次（约 15s），全程零 setRootTemplate
  * 如果 controller 身份变了（系统给了新连接），交给 didConnect / rebind 处理。
  */
 - (void)scheduleRootWatchdogForController:(CPInterfaceController *)ic {
@@ -454,6 +505,11 @@ static id<NSObject> sDataObserverToken = nil;
         if (self.interfaceController != ic) {
             return;
         }
+        if (!self->_templateReady) {
+            self->_templateReady = YES;
+            NSLog(@"[MusicFree][CarPlay] watchdog round=%lu: sync probe unlocked (handshake settled)",
+                  (unsigned long)round);
+        }
         if ([self syncAppliedStateFromFramework]) {
             NSLog(@"[MusicFree][CarPlay] watchdog round=%lu: framework confirms root, push sections",
                   (unsigned long)round);
@@ -462,7 +518,7 @@ static id<NSObject> sDataObserverToken = nil;
         }
         NSLog(@"[MusicFree][CarPlay] watchdog round=%lu: applied=0 inFlight=%d, keep polling (no reinstall)",
               (unsigned long)round, self->_rootInstallInFlight);
-        if (round >= 8) {
+        if (round >= 10) {
             self->_rootInstallInFlight = NO;
             return;
         }
@@ -471,7 +527,8 @@ static id<NSObject> sDataObserverToken = nil;
 }
 
 - (void)refreshRootSections {
-    if (!_rootList) {
+    if (!_rootList || !_templateReady) {
+        /* 握手未结算：绝不做同步读，等 watchdog 解锁后自己会再调一次 */
         return;
     }
     CPInterfaceController *ic = self.interfaceController;
@@ -479,15 +536,11 @@ static id<NSObject> sDataObserverToken = nil;
         return;
     }
     /*
-     * 判据改为「框架真相」而非 completion：
-     * topTemplate 已经是我们的 list，说明框架接受了 root，可以安全推内容。
-     * 若 topTemplate 为空（握手未完成）或已是别的模板（用户进了子页），都不推。
+     * 判据是「框架真相」而非 completion，且必须先通过 _templateReady 门。
+     * syncAppliedStateFromFramework 已包含 topTemplate == _rootList 判断。
      */
-    CPTemplate *top = ic.topTemplate;
-    if (top != _rootList) {
-        if (![self syncAppliedStateFromFramework]) {
-            return;
-        }
+    if (![self syncAppliedStateFromFramework]) {
+        return;
     }
     NSArray<CPListSection *> *sections = [self currentRootSections];
     [_rootList updateSections:sections];
@@ -502,14 +555,12 @@ static id<NSObject> sDataObserverToken = nil;
     if (!ic) {
         return;
     }
-    /* 与 refreshRootSections 同一判据：以框架 topTemplate 为准，不看 completion */
-    [self syncAppliedStateFromFramework];
-    /* 同一个歌单已在栈顶：只请求刷新，不重复 push */
-    if ([_currentSheetId isEqualToString:sheetId] && ic.topTemplate &&
-        ic.topTemplate != _rootList) {
-        [MFCarPlayBridge emitRequestTracks:sheetId];
+    /* 握手未结算时不碰同步属性；root 都没确认时也不 push，避免脏栈 */
+    if (!_templateReady) {
+        NSLog(@"[MusicFree][CarPlay] push ignored, template handshake not settled yet (sheet=%@)", sheetId);
         return;
     }
+    [self syncAppliedStateFromFramework];
 
     _currentSheetId = sheetId;
     _currentSheetTitle = title;
@@ -561,7 +612,7 @@ static id<NSObject> sDataObserverToken = nil;
 }
 
 - (void)refreshVisibleTracks {
-    if (!_currentSheetId || !self.interfaceController) {
+    if (!_currentSheetId || !self.interfaceController || !_templateReady) {
         return;
     }
     CPTemplate *top = self.interfaceController.topTemplate;
@@ -585,6 +636,8 @@ static id<NSObject> sDataObserverToken = nil;
     NSString *sheetId = note.userInfo[@"sheetId"];
     if ([kind isEqualToString:@"sheets"]) {
         _sheetsReceived = YES;
+        /* refreshRootSections 自带 _templateReady 门：握手未结算就静默返回，
+           watchdog 解锁后会再推一次，不会丢数据 */
         [self refreshRootSections];
     } else if ([kind isEqualToString:@"tracks"]) {
         if (!sheetId || [sheetId isEqualToString:_currentSheetId]) {

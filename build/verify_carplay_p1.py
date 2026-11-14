@@ -56,11 +56,35 @@ chk("生命周期不重装 root", "keep root, no reinstall" in cm_code
 chk("不靠 completion 判定成功（framework 真相）",
     "syncAppliedStateFromFramework" in cm_code
     and "framework confirms root is top" in cm_code)
+# --- 11142616 新增：同步 XPC 隔离（真凶修复） ---
+_install_match = re.search(r"-\s*\(void\)\s*installRootIfNeeded\s*\{([\s\S]*?)\n\}\n", cm_code)
+_install_body = _install_match.group(1) if _install_match else ""
+_sync_match = re.search(r"-\s*\(BOOL\)\s*syncAppliedStateFromFramework\s*\{([\s\S]*?)\n\}\n", cm_code)
+_sync_body = _sync_match.group(1) if _sync_match else ""
+_attach_match = re.search(
+    r"attachInterfaceController:\(CPInterfaceController \*\)interfaceController\s*\n"
+    r"\s*scene:\(CPTemplateApplicationScene \*\)scene\s*\n\{([\s\S]*?)\n\}\n",
+    cm_code)
+_attach_body = _attach_match.group(1) if _attach_match else ""
+chk("syncAppliedStateFromFramework 有 _templateReady 硬门",
+    "_templateReady" in cm_code
+    and "if (!_templateReady)" in _sync_body
+    and "topTemplate" in _sync_body)
+chk("installRootIfNeeded 内零 topTemplate 同步读",
+    "topTemplate" not in _install_body)
+chk("didConnect 内零 topTemplate 同步读",
+    _attach_body != "" and "topTemplate" not in _attach_body)
+chk("didConnect 异步化（不阻塞握手）",
+    "dispatch_async" in _attach_body)
+chk("watchdog 第一轮解锁同步探针",
+    "sync probe unlocked" in cm_code and "_templateReady = YES" in cm_code)
+chk("pushTracks 握手未结算时拒绝",
+    "template handshake not settled yet" in cm_code)
 chk("updateSections 不再被 _rootApplied 自锁",
-    "top != _rootList" in cm_code
+    "top == _rootList" in cm_code
     and "_rootApplied" not in _refresh_body)
 chk("watchdog 轮询核对而非一次性放弃",
-    "round:(NSUInteger)round" in cm_code and "round >= 8" in cm_code)
+    "round:(NSUInteger)round" in cm_code and "round >= 10" in cm_code)
 chk("scene 生命周期重绑 controller", "recoverTemplateScene" in cm and "sceneDidBecomeActive" in cm and "interfaceControllerFromScene" in cm)
 chk("点歌单 push", "pushTracksForSheet" in cm)
 chk("点曲目发播放事件", "emitPlayTrack" in cm)
@@ -69,7 +93,8 @@ chk("同一连接不重建 root", "root already installed, updateSections only" 
 chk("observer 幂等注册", "sDataObserverToken" in cm and "registerDataObserverIfNeeded" in cm)
 chk("disconnect 配对清理", "unregisterDataObserver" in cm and "didDisconnectInterfaceController" in cm)
 chk("无老危险 init 签名", "initWithText:detailText:image:accessoryType:" not in cm_code)
-chk("框架已有 root 时接管不重设", "adopt without setRootTemplate" in cm_code)
+# 11142616 起已删除 didConnect 期间的 topTemplate 接管分支（它就是打断连接的元凶）
+chk("已移除 didConnect 期 topTemplate 接管分支", "adopt without setRootTemplate" not in cm_code)
 
 # 3) pbxproj
 pbx = io.open(os.path.join(ROOT, "ios", "MusicFree.xcodeproj", "project.pbxproj"), encoding="utf-8").read()
