@@ -155,7 +155,13 @@ export function setupCarPlay() {
         }
     });
 
-    // 连接时车机会主动发 requestSheets；这里也先推一次，覆盖冷启动时序
+    // 连接时车机会主动发 requestSheets；RN 就绪后主动冲刷 pending 事件并先推一次，
+    // 覆盖车机以 intent background 冷启动、RN bundle 晚到的时序竞态。
+    try {
+        NativeBridge?.carPlayJSReady?.();
+    } catch (e) {
+        errorLog("[CarPlay] carPlayJSReady", e);
+    }
     pushSheets();
     trace("[CarPlay] JS bridge started");
 }

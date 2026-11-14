@@ -34,4 +34,7 @@
 /** 车机播放控制 */
 + (void)emitControl:(NSString *)action;
 
+/** JS 监听器注册完成后主动冲刷 RN 就绪前排队的车机事件 */
+- (void)carPlayJSReady;
+
 @end

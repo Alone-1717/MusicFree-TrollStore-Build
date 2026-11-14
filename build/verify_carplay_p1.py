@@ -26,16 +26,26 @@ chk("supportedEvents 含 3 个事件", all(x in bm for x in ["CarPlayPlayTrack",
 chk("JS->车机 3 个导出方法", all(x in bm for x in ["setSheets:", "setTracks:", "setNowPlaying:"]))
 chk("车机->JS 3 个类方法", all(x in bm for x in ["emitPlayTrack", "emitRequestTracks", "emitControl"]))
 chk("用 NSNotificationCenter 解耦", "NSNotificationCenter" in bm)
+chk("冷启动 pending 事件重放", "sPendingEvents" in bm and "flushPendingEvents" in bm)
+chk("桥暴露 JS 就绪冲刷", "carPlayJSReady" in bm)
 
 # 2) CarPlaySceneDelegate
 ch = io.open(os.path.join(ROOT, "ios", "MusicFree", "CarPlaySceneDelegate.h"), encoding="utf-8").read()
 cm = io.open(os.path.join(ROOT, "ios", "MusicFree", "CarPlaySceneDelegate.m"), encoding="utf-8").read()
 chk("用 CPListItem.handler（稳定 API）", "item.handler" in cm)
 chk("不用 CPListTemplateDelegate（签名差异）", "didSelectListItem" not in cm)
-chk("歌单列表 + 点歌单 push", "rebuildRoot" in cm and "pushTracksForSheet" in cm)
+chk("原生占位首屏", "placeholderSections" in cm and "正在加载歌单" in cm)
+chk("root 幂等 + animated:NO", "installRootIfNeeded" in cm and "sRootedController == ic" in cm and "animated:NO" in cm)
+chk("root 带 completion", "setRootTemplate:list" in cm and "completion:^" in cm and "BOOL success" in cm)
+chk("点歌单 push", "pushTracksForSheet" in cm)
 chk("点曲目发播放事件", "emitPlayTrack" in cm)
-chk("数据更新刷新", "dataDidUpdate" in cm and "updateSections" in cm)
-chk("无老危险 init 签名", "accessoryType:" not in cm)
+chk("数据到达只 updateSections", "handleDataUpdate" in cm and "updateSections" in cm and "rebuildRoot" not in cm)
+chk("同一连接不重建 root", "root already installed, updateSections only" in cm)
+chk("observer 幂等注册", "sDataObserverToken" in cm and "registerDataObserverIfNeeded" in cm)
+chk("disconnect 配对清理", "unregisterDataObserver" in cm and "didDisconnectInterfaceController" in cm)
+cm_code = re.sub(r"/\*[\s\S]*?\*/", "", cm)
+cm_code = re.sub(r"//.*$", "", cm_code, flags=re.M)
+chk("无老危险 init 签名", "initWithText:detailText:image:accessoryType:" not in cm_code)
 
 # 3) pbxproj
 pbx = io.open(os.path.join(ROOT, "ios", "MusicFree.xcodeproj", "project.pbxproj"), encoding="utf-8").read()
@@ -53,6 +63,7 @@ chk("JS 推 setSheets/setTracks/setNowPlaying", all(x in js for x in ["setSheets
 chk("JS 调 playWithReplacePlayList", "playWithReplacePlayList" in js)
 chk("JS 非 iOS 静默降级", "Platform.OS === \"ios\"" in js)
 chk("JS 幂等 setup", "started" in js)
+chk("JS 就绪冲刷 + 首次推歌单", "carPlayJSReady" in js and "pushSheets()" in js)
 
 # 5) musicSheet 新方法
 ms = io.open(os.path.join(ROOT, "src", "core", "musicSheet", "index.ts"), encoding="utf-8").read()
