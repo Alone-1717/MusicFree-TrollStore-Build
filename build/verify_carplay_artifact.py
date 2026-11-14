@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142515"
+EXPECTED_VERSION = "11142615"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -27,7 +27,8 @@ BINARY_MARKERS = [
     b"no retry (waiting framework)",
     b"keep root, no reinstall",
     b"adopt without setRootTemplate",
-    b"watchdog diagnose",
+    b"framework confirms root is top",
+    b"keep polling (no reinstall)",
     b"recoverTemplateScene",
     b"rebind controller",
     b"carPlayJSReady",
