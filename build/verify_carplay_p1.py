@@ -43,7 +43,10 @@ chk("不用 CPListTemplateDelegate（签名差异）", "didSelectListItem" not i
 chk("原生占位首屏", "placeholderSections" in cm and "正在加载歌单" in cm)
 chk("root 幂等 + animated:NO", "installRootIfNeeded" in cm and "_rootInstalledFor == ic" in cm and "animated:NO" in cm)
 chk("root 带 completion", "setRootTemplate:list" in cm and "completion:^" in cm and "BOOL success" in cm)
-chk("watchdog 只诊断不重装", "scheduleRootWatchdogForController" in cm and "keep polling (no reinstall)" in cm
+chk("watchdog 只诊断不重装（无风暴标记）",
+    "scheduleRootWatchdogForController" in cm
+    and "applied=0 inFlight=" in cm
+    and "rearm exhausted" in cm
     and "root watchdog fired" not in cm_code)
 chk("root 成功标记 _rootApplied", "_rootApplied" in cm and "self->_rootApplied = YES" in cm)
 chk("一连接只装一次 root（不死循环重发）",
@@ -78,13 +81,84 @@ chk("didConnect 异步化（不阻塞握手）",
     "dispatch_async" in _attach_body)
 chk("watchdog 第一轮解锁同步探针",
     "sync probe unlocked" in cm_code and "_templateReady = YES" in cm_code)
+# --- 受限 rearm 规格（3s 窗口 / 2 次上限 / 静默失败计数 / exhausted 停止） ---
+chk("rearm 上限常量为 2",
+    "kMFMaxRearm = 2" in cm_code)
+chk("rearm 回传窗口为 3 秒",
+    "kMFInstallSettleWindow = 3.0" in cm_code
+    and "rootInstallTimedOut" in cm_code)
+chk("rearm 前先清 inFlight（否则被旧标志挡住）",
+    "self->_rootInstallInFlight = NO;" in cm_code
+    and "_rearmCount += 1" in cm_code
+    and "_rearmPending = YES" in cm_code
+    and "rearm #%lu/%lu" in cm_code)
+chk("rearm 每次用全新 CPListTemplate",
+    "installRootIfNeededAllowRearm" in cm_code
+    and "fresh template" in cm_code
+    and "CPListTemplate alloc] initWithTitle:@\"音乐\"" in cm_code)
+chk("rearm 静默失败按 3s 判定（不能只等 completion）",
+    "silently failed" in cm_code
+    and "_rearmPending && timedOut" in cm_code)
+chk("首发不提前 rearm（等自己的 3s 窗口）",
+    "initial install still settling, wait" in cm_code
+    and "initialSettling" in cm_code)
+chk("rearm exhausted 后停止 polling",
+    "rearm exhausted" in cm_code
+    and "stop polling" in cm_code
+    and "_rootExhausted = YES" in cm_code)
+chk("stale controller 调用包了 @try（防闪退，非死循环解药）",
+    "@catch (NSException *ex)" in cm_code
+    and "threw on stale controller" in cm_code
+    and "@try 只挡" in cm)
+# --- ① @try 定位必须写清是防闪退保险 ---
+chk("@try 文档定位为防闪退保险，不冒充死循环解法",
+    "保护不了 completion 永远不回" in cm
+    and "3s" in cm)
+# --- ③ generation token 防晚到 completion 竞态 ---
+chk("generation token 丢弃晚到 completion",
+    "_rootGeneration" in cm_code
+    and "stale completion dropped" in cm_code
+    and "token != self->_rootGeneration" in cm_code)
+# --- ② controller 失效直接 exhausted，不浪费次数 ---
+chk("controller 失效直接 exhausted 不消耗次数",
+    "_controllerInvalidated" in cm_code
+    and "controller invalidated, stop polling" in cm_code
+    and "controller already invalidated, no more attempts" in cm_code)
+# --- 回归防护：didConnect 必须无条件把 controller 置回有效 ---
+_attach_full = re.search(
+    r"attachInterfaceController:\(CPInterfaceController \*\)interfaceController\s*\n"
+    r"\s*scene:\(CPTemplateApplicationScene \*\)scene\s*\n\{([\s\S]*?)\n\}\n",
+    cm_code)
+_attach_full_body = _attach_full.group(1) if _attach_full else ""
+chk("didConnect 无条件重置 _controllerInvalidated = NO（重连不被误判死）",
+    "_controllerInvalidated = NO;" in _attach_full_body
+    # 必须在 if (_rootInstalledFor != ...) 之前，不能关在块内
+    and _attach_full_body.index("_controllerInvalidated = NO;")
+        < _attach_full_body.index("if (_rootInstalledFor != interfaceController)"))
+chk("3a 分支不与在途 rearm 抢夺（加 !_rearmPending）",
+    "self->_controllerInvalidated && !self->_rootApplied && !self->_rearmPending" in cm_code)
+chk("rearm 成功路径显式置 _templateReady=YES",
+    "self->_templateReady = YES;" in cm_code)
+# --- ⑤ 同步异常计入 rearm 计数 ---
+chk("同步异常计入 rearm 次数",
+    "rearm #%lu threw" in cm_code)
+# --- ④ rearm 成功后重新推数据 ---
+chk("rearm 成功后重新推 sections",
+    "rearm succeeded, repush sections to fresh template" in cm_code
+    and "initial root succeeded, push sections" in cm_code)
+# --- ⑥ didConnect 打印新旧 controller 地址 ---
+chk("didConnect 打印新旧 controller 地址",
+    "didConnect ctrl new=%p old=%p same=%d" in cm_code)
+# --- ⑦ 文档写明实际最早 rearm 是 4.5s ---
+chk("文档写明实际最早 rearm 是 4.5s",
+    "实际最早 rearm 时刻是 **4.5s**" in cm)
 chk("pushTracks 握手未结算时拒绝",
     "template handshake not settled yet" in cm_code)
-chk("updateSections 不再被 _rootApplied 自锁",
-    "top == _rootList" in cm_code
-    and "_rootApplied" not in _refresh_body)
+chk("updateSections 不再被二次自锁（completion 成功即推）",
+    "if (!_rootApplied)" in _refresh_body
+    and "syncAppliedStateFromFramework" in _refresh_body)
 chk("watchdog 轮询核对而非一次性放弃",
-    "round:(NSUInteger)round" in cm_code and "round >= 10" in cm_code)
+    "round:(NSUInteger)round" in cm_code and "kMFWatchdogRounds" in cm_code)
 chk("scene 生命周期重绑 controller", "recoverTemplateScene" in cm and "sceneDidBecomeActive" in cm and "interfaceControllerFromScene" in cm)
 chk("点歌单 push", "pushTracksForSheet" in cm)
 chk("点曲目发播放事件", "emitPlayTrack" in cm)

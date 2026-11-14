@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142616"
+EXPECTED_VERSION = "11142617"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -30,6 +30,14 @@ BINARY_MARKERS = [
     b"keep polling (no reinstall)",
     b"sync probe unlocked",
     b"template handshake not settled yet",
+    b"rearm #%lu/%lu",
+    b"silently failed",
+    b"rearm exhausted",
+    b"threw on stale controller",
+    b"stale completion dropped",
+    b"rearm succeeded, repush sections to fresh template",
+    b"initial root succeeded, push sections",
+    b"didConnect ctrl new=%p old=%p same=%d",
     b"recoverTemplateScene",
     b"rebind controller",
     b"carPlayJSReady",

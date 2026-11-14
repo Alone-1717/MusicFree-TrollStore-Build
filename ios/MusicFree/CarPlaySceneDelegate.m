@@ -52,17 +52,22 @@
  *   1) 一个 CPInterfaceController 生命周期内，setRootTemplate: 只发一次。
  *   2) scene 生命周期（didBecomeActive / willEnterForeground /
  *      didEnterBackground）绝不重装 root，只做诊断与内容刷新。
- *   3) watchdog 只诊断，不重装。
+ *   3) watchdog 是**受限恢复**：首发 1 次 + 最多 2 次 rearm = 全生命周期
+ *      最多 3 次 setRootTemplate。绝不回到 11142415 的 9 次风暴。
  *   4) **`_templateReady == NO` 期间，任何代码路径都不许读
  *      `interfaceController.topTemplate`。** 该标志由 watchdog 第一轮
  *      （didConnect 之后 1.5s）置 YES —— 那时握手已结算，同步读安全。
  *      这是 11142615 黑屏的直接修复。
- *   5) `didConnectInterfaceController:` 内只做「记录 controller + 注册
- *      observer」，root 安装与数据请求全部 dispatch_async 到下一轮
+ *   5) `didConnectInterfaceController:` 内**绝不读写 interfaceController 的
+ *      任何同步属性**。root 安装与数据请求全部 dispatch_async 到下一轮
  *      runloop，让握手事务先干净结算。
- *   6) `didConnectInterfaceController:` 内**绝不读写 interfaceController 的
- *      任何同步属性**（topTemplate 就是同步 XPC 往返）。root 安装与数据请求
- *      全部 dispatch_async 到下一轮 runloop，让握手事务先干净结算。
+ *   6) `@try` 只挡「向 stale controller 调用瞬间同步抛异常」导致闪退，
+ *      **保护不了 completion 永远不回** —— 后者由 watchdog 的 3s
+ *      静默失败判定负责。两者职责不同，不可互替。
+ *   7) 每次 setRootTemplate 带 generation token；晚到的旧 completion
+ *      整包丢弃，不许覆盖当前状态（防"rearm 成功后被首发迟到回调打回"）。
+ *   8) rearm 用**全新 CPListTemplate**，成功后必须重新推一次 sections，
+ *      否则车机上是空列表（不黑屏但没内容）。
  *
  * 只用 iOS 14+ 稳定 API（CPListItem.handler / updateSections:），规避
  * initWithText:detailText:image:accessoryType: 的 SDK 签名差异。
@@ -71,6 +76,25 @@
 #import "CarPlayBridge.h"
 
 static NSString *const kMFCarPlayDataDidUpdate = @"MFCarPlayDataDidUpdate";
+
+/*
+ * 受限 rearm 的硬边界（见文件头不变量 7）：
+ *   kMFMaxRearm            一个连接生命周期内最多 rearm 2 次
+ *   kMFInstallSettleWindow setRootTemplate 之后给它 3s 回传窗口
+ *   kMFWatchdogTick        watchdog 步进
+ *   kMFWatchdogRounds      总轮数上限
+ *
+ * ⚠ 实际最早 rearm 时刻是 **4.5s**，不是 3s：
+ *   tick 是 1.5s，round 1（t=1.5s）时距首发仅 1.5s -> timedOut=NO -> initialSettling；
+ *   round 2（t=3.0s）边界值仍可能判 NO；
+ *   round 3（t=4.5s）才必然 timedOut=YES 并发出 rearm #1。
+ *   所以看日志时不要拿 3s 去对时间，也**不要为了"凑 3s"去调小 tick** ——
+ *   tick 越小，同步读 topTemplate 越早，越容易重踩 11142615 的握手打断。
+ */
+static const NSUInteger kMFMaxRearm = 2;
+static const NSTimeInterval kMFInstallSettleWindow = 3.0;
+static const NSTimeInterval kMFWatchdogTick = 1.5;
+static const NSUInteger kMFWatchdogRounds = 12;
 
 /* 进程级幂等状态：scene 反复 activate 时不会重复注册 / 重复设 root */
 static __weak CPInterfaceController *sRootedController = nil;
@@ -87,6 +111,10 @@ static id<NSObject> sDataObserverToken = nil;
 - (NSArray<CPListSection *> *)placeholderSections;
 - (NSArray<CPListSection *> *)currentRootSections;
 - (void)installRootIfNeeded;
+- (void)installRootIfNeededAllowRearm:(BOOL)allowRearm;
+- (BOOL)dispatchRootTemplate:(CPListTemplate *)list;
+- (void)recordRootInstallTimestamp;
+- (BOOL)rootInstallTimedOut;
 - (BOOL)syncAppliedStateFromFramework;
 - (void)scheduleRootWatchdogForController:(CPInterfaceController *)ic;
 - (void)scheduleRootWatchdogForController:(CPInterfaceController *)ic round:(NSUInteger)round;
@@ -111,6 +139,26 @@ static id<NSObject> sDataObserverToken = nil;
     BOOL _rootApplied;
     /* 握手已结算、允许做同步 XPC 读（topTemplate）。见不变量 4。 */
     BOOL _templateReady;
+    /*
+     * 受限 rearm 状态（见 watchdog 规格）：
+     *   _rearmCount   已发出的 rearm 次数，上限 kMFMaxRearm
+     *   _rearmPending 当前有一次 rearm 正在等结果（用于 3s 静默失败判定）
+     *   _lastInstallAt 上一次 setRootTemplate 的调用时刻（timeIntervalSinceReferenceDate）
+     */
+    NSUInteger _rearmCount;
+    BOOL _rearmPending;
+    NSTimeInterval _lastInstallAt;
+    BOOL _rootExhausted;
+    /*
+     * 每次 setRootTemplate 递增；completion 闭包捕获当时值，
+     * 回来时 != 当前值 -> 丢弃（防晚到回调打乱状态）。
+     */
+    NSUInteger _rootGeneration;
+    /*
+     * didDisconnect 后置 YES：此时向 controller 发任何 XPC 都注定无效，
+     * rearm 直接 exhausted，不浪费次数。
+     */
+    BOOL _controllerInvalidated;
     BOOL _observerOwnedByMe;
     /* 已经对哪个 controller 调用过 setRootTemplate（一个 controller 只准一次） */
     __weak CPInterfaceController *_rootInstalledFor;
@@ -155,6 +203,12 @@ static id<NSObject> sDataObserverToken = nil;
     _rootInstallInFlight = NO;
     _rootApplied = NO;
     _templateReady = NO;
+    _rearmCount = 0;
+    _rearmPending = NO;
+    _rootExhausted = NO;
+    _lastInstallAt = 0;
+    _rootGeneration += 1;      /* 作废所有在途 completion */
+    _controllerInvalidated = YES;
 }
 
 /*
@@ -162,20 +216,51 @@ static id<NSObject> sDataObserverToken = nil;
  *   **函数体内绝不读写 interfaceController 的任何同步属性。**
  *   topTemplate 是同步 XPC 往返，在握手未结算时读它 = 直接打断连接。
  *   root 安装 / 数据请求全部推到下一轮 runloop。
+ *
+ * 注意：成员变量一律用**参数传入的 interfaceController** 覆盖，
+ * 绝不沿用上一次连接的旧 controller（旧的可能已被 invalidate）。
  */
 - (void)attachInterfaceController:(CPInterfaceController *)interfaceController
                             scene:(CPTemplateApplicationScene *)scene
 {
     _templateScene = scene;
+    CPInterfaceController *previous = self.interfaceController;
     self.interfaceController = interfaceController;
     sActiveDelegate = self;
 
-    /* 新连接（controller 身份变化）：旧的一次性标记作废，允许新 controller 装一次 root */
+    /*
+     * 显式打印新旧地址，用于确认「每次 didConnect 都换成传入的新 controller」。
+     * 11142615 日志里两次都打印同一个地址 0x2818352c0，需要能在新日志中直接判定
+     * 是系统复用同一对象（same=1），还是没覆盖（此时新旧应不同却没换）。
+     */
+    NSLog(@"[MusicFree][CarPlay] didConnect ctrl new=%p old=%p same=%d",
+          (__bridge void *)interfaceController,
+          (__bridge void *)previous,
+          (previous == interfaceController));
+
+    /*
+     * didConnect 是「连接有效」的最高权威信号：**无条件**把 controller 视为有效。
+     *
+     * 这一行绝不能放进下面的 if (_rootInstalledFor != controller) 里。
+     * 因为系统重连时可能复用同一个 CPInterfaceController 对象（日志里出现过
+     * 两次 connected 打印同一地址 0x2818352c0）；那种情况下 if 进不去，
+     * _controllerInvalidated 会残留 YES，watchdog 3a 分支随即判死，
+     * 连一次 setRootTemplate 都不发 —— 比黑屏更难排查。
+     * 所以：didDisconnect 置 YES，didConnect 无条件置 NO，两者严格配对。
+     */
+    _controllerInvalidated = NO;
+
+    /* 新连接（controller 身份变化）：旧的一次性标记全部作废 */
     if (_rootInstalledFor != interfaceController) {
         _rootInstalledFor = nil;
         _rootInstallInFlight = NO;
         _rootApplied = NO;
         _templateReady = NO;
+        _rearmCount = 0;
+        _rearmPending = NO;
+        _rootExhausted = NO;
+        _lastInstallAt = 0;
+        _rootGeneration += 1;          /* 作废旧 controller 的在途 completion */
     }
     NSLog(@"[MusicFree][CarPlay] connected (phase1) controller=%p installedFor=%p applied=%d ready=%d",
           (__bridge void *)interfaceController,
@@ -245,6 +330,12 @@ static id<NSObject> sDataObserverToken = nil;
         _rootInstallInFlight = NO;
         _rootApplied = NO;
         _templateReady = NO;
+        _rearmCount = 0;
+        _rearmPending = NO;
+        _rootExhausted = NO;
+        _lastInstallAt = 0;
+        _rootGeneration += 1;          /* 作废旧 controller 的在途 completion */
+        _controllerInvalidated = NO;   /* 新 controller 视为有效 */
         [self registerDataObserverIfNeeded];
         __weak __typeof(self) weakSelf = self;
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -381,75 +472,201 @@ static id<NSObject> sDataObserverToken = nil;
     return @[[[CPListSection alloc] initWithItems:items]];
 }
 
-#pragma mark - Root Template（一连接只装一次 / animated:NO / 零同步读）
+#pragma mark - Root Template（一连接首发一次 / 受限 rearm / animated:NO / 零同步读）
 
 - (void)installRootIfNeeded {
+    [self installRootIfNeededAllowRearm:NO];
+}
+
+/*
+ * allowRearm == NO：正常路径（didConnect / rebind / 生命周期）
+ *   - 同一 controller 已装过 -> 只 updateSections，绝不重发
+ *   - inFlight -> 挡住重复
+ * allowRearm == YES：只有 watchdog 在"最后一次合法尝试"时走这里
+ *   - 跳过 _rootInstalledFor / inFlight 两个闸门，但由 watchdog 保证次数上限
+ *   - 每次都新建 CPListTemplate（旧的可能已绑定失效连接）
+ */
+- (void)installRootIfNeededAllowRearm:(BOOL)allowRearm {
     CPInterfaceController *ic = self.interfaceController;
     if (!ic) {
         return;
     }
-
-    /*
-     * 不变量 1：同一个 controller 只装一次。
-     * 无论上次成功还是失败，都绝不再发 setRootTemplate —— 重发会打死 XPC 连接。
-     * syncAppliedStateFromFramework 已含 _templateReady 门，未就绪时零同步读。
-     */
-    if (_rootInstalledFor == ic) {
-        if ([self syncAppliedStateFromFramework]) {
-            NSLog(@"[MusicFree][CarPlay] root already installed, updateSections only");
-            [self refreshRootSections];
-        } else {
-            NSLog(@"[MusicFree][CarPlay] root already set on this controller, no retry (waiting framework)");
-        }
+    if (_rootExhausted) {
+        NSLog(@"[MusicFree][CarPlay] install skipped, rearm exhausted");
         return;
     }
 
-    /* 不变量 2：同一轮并发调用直接挡掉 */
-    if (_rootInstallInFlight) {
-        NSLog(@"[MusicFree][CarPlay] root install in flight, skip duplicate");
-        return;
+    if (!allowRearm) {
+        /*
+         * 不变量 1：同一个 controller 只装一次。
+         * 无论上次成功还是失败，都绝不再发 setRootTemplate —— 重发会打死 XPC 连接。
+         * syncAppliedStateFromFramework 已含 _templateReady 门，未就绪时零同步读。
+         */
+        if (_rootInstalledFor == ic) {
+            if ([self syncAppliedStateFromFramework]) {
+                NSLog(@"[MusicFree][CarPlay] root already installed, updateSections only");
+                [self refreshRootSections];
+            } else {
+                NSLog(@"[MusicFree][CarPlay] root already set on this controller, no retry (waiting framework)");
+            }
+            return;
+        }
+
+        /* 不变量 2：同一轮并发调用直接挡掉 */
+        if (_rootInstallInFlight) {
+            NSLog(@"[MusicFree][CarPlay] root install in flight, skip duplicate");
+            return;
+        }
     }
 
     /*
      * 注意：这里**故意不读 ic.topTemplate**。
      * 11142615 日志证明在 didConnect 后立刻同步读 topTemplate 会让框架报
      * `Error accessing synchronous template provider` 并 `Connection interrupted`。
-     * 若要接管系统已有 root，交给 watchdog（1.5s 后 _templateReady=YES）处理。
      */
     _rootInstalledFor = ic;
     sRootedController = ic;
     _rootInstallInFlight = YES;
-    NSLog(@"[MusicFree][CarPlay] one-shot root install armed controller=%p",
-          (__bridge void *)ic);
+    _rearmPending = NO;
 
+    /* 每次（含 rearm）都用全新模板对象，绝不复用可能已绑定失效连接的旧实例 */
     CPListTemplate *list = [[CPListTemplate alloc] initWithTitle:@"音乐"
                                                         sections:[self placeholderSections]];
     _rootList = list;
 
-    __weak __typeof(self) weakSelf = self;
-    [ic setRootTemplate:list
-               animated:NO
-             completion:^(BOOL success, NSError * _Nullable error) {
-                 __strong __typeof(weakSelf) self = weakSelf;
-                 if (!self) {
-                     return;
-                 }
-                 NSLog(@"[MusicFree][CarPlay] setRootTemplate success=%d error=%@",
-                       success, error.localizedDescription);
-                 self->_rootInstallInFlight = NO;
-                 if (!success) {
-                     /* completion 说失败，但框架真相仍以 topTemplate 为准（需 ready） */
-                     [self syncAppliedStateFromFramework];
-                     return;
-                 }
-                 self->_rootApplied = YES;
-                 if (self->_templateReady) {
-                     [self refreshRootSections];
-                 }
-             }];
+    if (allowRearm) {
+        NSLog(@"[MusicFree][CarPlay] rearm #%lu controller=%p (fresh template=%p)",
+              (unsigned long)_rearmCount, (__bridge void *)ic, (__bridge void *)list);
+    } else {
+        NSLog(@"[MusicFree][CarPlay] one-shot root install armed controller=%p",
+              (__bridge void *)ic);
+    }
+
+    [self dispatchRootTemplate:list];
     NSLog(@"[MusicFree][CarPlay] native placeholder root installed (animated=NO)");
 
     [self scheduleRootWatchdogForController:ic];
+}
+
+/*
+ * 真正调用 setRootTemplate。
+ *
+ * @try 的定位（**不要说反因果**）：
+ *   @try 只挡「向 stale controller 调用瞬间同步抛异常」这一种情况，
+ *   防止 process 被 NSInvalidArgumentException 带走（黑屏变闪退）。
+ *   它**保护不了 completion 永远不回** —— 那件事由 watchdog 里
+ *   rootInstallTimedOut() 的 3s 静默失败判定负责。
+ *   两者职责不同，缺一不可，且不可互相替代。
+ *
+ * generation token（防晚到 completion 竞态）：
+ *   每次发起（首发或 rearm）都 _rootGeneration += 1，闭包捕获当时的值。
+ *   completion 回来时若 token != _rootGeneration 说明这是**旧一次**调用的
+ *   迟到回调，直接丢弃，绝不允许它覆盖当前状态。
+ *   典型场景：首发 completion 因车机 XPC 慢在 3s 后才回，此时 rearm 已发出；
+ *   若没有 token，rearm 先成功置 applied=1 后又被首发迟到回调打回 applied=0。
+ */
+- (BOOL)dispatchRootTemplate:(CPListTemplate *)list {
+    CPInterfaceController *ic = self.interfaceController;
+    if (!ic) {
+        _rootInstallInFlight = NO;
+        return NO;
+    }
+    [self recordRootInstallTimestamp];
+
+    _rootGeneration += 1;
+    NSUInteger token = _rootGeneration;
+    NSUInteger generationAtDispatch = _rearmCount;
+
+    __weak __typeof(self) weakSelf = self;
+    @try {
+        [ic setRootTemplate:list
+                   animated:NO
+                 completion:^(BOOL success, NSError * _Nullable error) {
+                     __strong __typeof(weakSelf) self = weakSelf;
+                     if (!self) {
+                         return;
+                     }
+                     /*
+                      * 晚到回调：不是当前这一代，整包丢弃（不改任何状态）。
+                      * 只留一条日志便于车机上识别竞态是否真的发生。
+                      */
+                     if (token != self->_rootGeneration) {
+                         NSLog(@"[MusicFree][CarPlay] stale completion dropped (gen %lu != %lu) success=%d",
+                               (unsigned long)token, (unsigned long)self->_rootGeneration, success);
+                         return;
+                     }
+                     NSLog(@"[MusicFree][CarPlay] setRootTemplate success=%d error=%@ (gen=%lu rearm=%lu)",
+                           success, error.localizedDescription,
+                           (unsigned long)token, (unsigned long)generationAtDispatch);
+                     self->_rootInstallInFlight = NO;
+                     self->_rearmPending = NO;
+                     if (!success) {
+                         /*
+                          * completion 明确失败：清掉 applied 以允许 watchdog 计数 rearm，
+                          * 但仍向框架核对一次真相（需 _templateReady）。
+                          */
+                         BOOL confirmed = [self syncAppliedStateFromFramework];
+                         if (!confirmed && self->_templateReady) {
+                             self->_rootApplied = NO;
+                         }
+                         return;
+                     }
+                     BOOL wasRearm = generationAtDispatch > 0;
+                     self->_rootApplied = YES;
+                     /* 成功即清 rearm 计数，exhausted / invalidated 状态一并解除 */
+                     self->_rearmCount = 0;
+                     self->_rootExhausted = NO;
+                     self->_controllerInvalidated = NO;
+                     /*
+                      * 握手必然早就结算（rearm 最早发生在 watchdog round 3 = 4.5s），
+                      * 但这里显式置位，不依赖调用顺序 —— refreshRootSections 的
+                      * 数据源是 MFCarPlayBridge 进程级单例，与旧 template 无关，
+                      * 只要 applied=1 且 _templateReady=1 就一定能推成功。
+                      */
+                     self->_templateReady = YES;
+                     if (wasRearm) {
+                         /*
+                          * rearm 用的是**全新 CPListTemplate**，之前 updateSections
+                          * 推给旧模板的数据已经随旧对象丢弃，必须显式再推一次，
+                          * 否则车机上是"原生占位空列表"——不黑屏但没内容。
+                          */
+                         NSLog(@"[MusicFree][CarPlay] rearm succeeded, repush sections to fresh template");
+                     } else {
+                         NSLog(@"[MusicFree][CarPlay] initial root succeeded, push sections");
+                     }
+                     [self refreshRootSections];
+                 }];
+    } @catch (NSException *ex) {
+        NSLog(@"[MusicFree][CarPlay] setRootTemplate threw on stale controller: %@", ex.reason);
+        _rootInstallInFlight = NO;
+        _rearmPending = NO;
+        /*
+         * 同步异常计入 rearm 次数（否则次数上限对同步异常不生效）。
+         * 但若是「controller 已失效」这一类，重试注定无效 —— 直接 exhausted，
+         * 不浪费剩余次数（见 didDisconnect 置的 _controllerInvalidated）。
+         */
+        if (_controllerInvalidated) {
+            _rootExhausted = YES;
+            NSLog(@"[MusicFree][CarPlay] rearm exhausted: controller already invalidated, no more attempts");
+        } else {
+            _rearmCount += 1;
+            NSLog(@"[MusicFree][CarPlay] rearm #%lu threw: %@", (unsigned long)_rearmCount, ex.reason);
+        }
+        return NO;
+    }
+    return YES;
+}
+
+- (void)recordRootInstallTimestamp {
+    _lastInstallAt = [NSDate timeIntervalSinceReferenceDate];
+}
+
+/* 距上次 setRootTemplate 是否已超过回传窗口（3s） */
+- (BOOL)rootInstallTimedOut {
+    if (_lastInstallAt <= 0) {
+        return YES;
+    }
+    return ([NSDate timeIntervalSinceReferenceDate] - _lastInstallAt) >= kMFInstallSettleWindow;
 }
 
 /*
@@ -482,13 +699,33 @@ static id<NSObject> sDataObserverToken = nil;
 }
 
 /*
- * completion 可能永远不回调。watchdog 绝不重装 root（重装会打死 XPC 连接），
- * 只做两件事：
- *   a) 第一轮把 _templateReady 置 YES（didConnect 之后 1.5s，握手已结算），
- *      解锁同步读
- *   b) 之后向框架核对 topTemplate，若已是我们自己的 list -> 认定成功并推内容；
- *      未确认则按 1.5s 间隔继续核对，最多 10 次（约 15s），全程零 setRootTemplate
- * 如果 controller 身份变了（系统给了新连接），交给 didConnect / rebind 处理。
+ * completion 可能永远不回调（11142515 / 11142615 均实测 inFlight 长期为 1）。
+ *
+ * watchdog = **受限恢复**，不是重试风暴。规格：
+ *
+ *   每 tick（1.5s）做一次判定，顺序如下：
+ *   1) round 1：握手已结算 -> 置 _templateReady，解锁 topTemplate 同步读
+ *   2) syncAppliedStateFromFramework() 成立 -> applied=1，推 sections，结束
+ *   3) 静默失败判定（关键，避免第二个死循环）：
+ *      若 _rearmPending 且 rootInstallTimedOut()（rearm 发出已超 3s）
+ *      且 applied == 0 -> 这次 rearm 视为失败：_rearmPending=NO; _rearmCount 不变
+ *      （计数在**发出**时自增，这里只是确认它失败，不再额外 +1，避免双计）
+ *   4) rearm 判定：
+ *      applied == 0 && !_rearmPending && _templateReady && rootInstallTimedOut()
+ *      && _rearmCount < kMFMaxRearm
+ *      -> _rearmCount++ ; _rearmPending=YES ; _rootInstallInFlight=NO ;
+ *         [self installRootIfNeededAllowRearm:YES]（全新 template 对象）
+ *   5) exhausted：
+ *      applied == 0 && _rearmCount >= kMFMaxRearm && rootInstallTimedOut()
+ *      -> _rootExhausted=YES ; 打一条 `rearm exhausted` ; **停止 polling**
+ *   6) round 达到 kMFWatchdogRounds 仍未 applied -> 也走 exhausted 语义并停止
+ *
+ * exhausted 之后：不再有任何 setRootTemplate，也不再空转。
+ * 若框架之后重新 didConnect（切歌 / 车机重连），attachInterfaceController:
+ * 会重置全部状态并正常设模板，覆盖 exhausted。
+ *
+ * 次数上限保证：一个连接生命周期内 setRootTemplate 最多 1 + kMFMaxRearm = 3 次，
+ * 远低于 11142415 的 9 次风暴。
  */
 - (void)scheduleRootWatchdogForController:(CPInterfaceController *)ic {
     [self scheduleRootWatchdogForController:ic round:1];
@@ -496,7 +733,7 @@ static id<NSObject> sDataObserverToken = nil;
 
 - (void)scheduleRootWatchdogForController:(CPInterfaceController *)ic round:(NSUInteger)round {
     __weak __typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kMFWatchdogTick * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         __strong __typeof(weakSelf) self = weakSelf;
         if (!self) {
@@ -505,21 +742,98 @@ static id<NSObject> sDataObserverToken = nil;
         if (self.interfaceController != ic) {
             return;
         }
+        if (self->_rootExhausted) {
+            /* 已经放弃过，不再空转（正常情况下不会到这里，双保险） */
+            return;
+        }
         if (!self->_templateReady) {
             self->_templateReady = YES;
             NSLog(@"[MusicFree][CarPlay] watchdog round=%lu: sync probe unlocked (handshake settled)",
                   (unsigned long)round);
         }
+
+        /* 2) 已确认成功 -> 推内容并结束 */
         if ([self syncAppliedStateFromFramework]) {
             NSLog(@"[MusicFree][CarPlay] watchdog round=%lu: framework confirms root, push sections",
                   (unsigned long)round);
             [self refreshRootSections];
             return;
         }
-        NSLog(@"[MusicFree][CarPlay] watchdog round=%lu: applied=0 inFlight=%d, keep polling (no reinstall)",
-              (unsigned long)round, self->_rootInstallInFlight);
-        if (round >= 10) {
+
+        BOOL timedOut = [self rootInstallTimedOut];
+        NSLog(@"[MusicFree][CarPlay] watchdog round=%lu: applied=0 inFlight=%d rearm=%lu pending=%d timedOut=%d invalid=%d",
+              (unsigned long)round,
+              self->_rootInstallInFlight,
+              (unsigned long)self->_rearmCount,
+              self->_rearmPending,
+              timedOut,
+              self->_controllerInvalidated);
+
+        /*
+         * 3a) controller 已失效（didDisconnect 置位）：重试注定无效，
+         * 直接 exhausted，不消耗 rearm 次数。
+         * 加 !_rearmPending 条件：刚发出的一次 rearm 还在自己的 3s 窗口内时
+         * 不要抢先判死，让它在第 3) 步按静默失败正常结算。
+         */
+        if (self->_controllerInvalidated && !self->_rootApplied && !self->_rearmPending) {
+            self->_rootExhausted = YES;
             self->_rootInstallInFlight = NO;
+            NSLog(@"[MusicFree][CarPlay] rearm exhausted: controller invalidated, stop polling (wait for reconnect)");
+            return;
+        }
+
+        /* 3) 静默失败判定：rearm 发出超 3s 仍 applied=0 -> 这次 rearm 失败 */
+        if (self->_rearmPending && timedOut && !self->_rootApplied) {
+            self->_rearmPending = NO;
+            self->_rootInstallInFlight = NO;
+            NSLog(@"[MusicFree][CarPlay] rearm #%lu silently failed (no completion in %.0fs)",
+                  (unsigned long)self->_rearmCount, kMFInstallSettleWindow);
+        }
+
+        /*
+         * 3b) 首发也在等自己的 3s 窗口：若 completion 还没回来且未超窗，
+         * 只继续 polling，绝不提前 rearm（避免正常慢回传被误判成失败）。
+         */
+        BOOL initialSettling = (!self->_rootApplied
+                                && self->_rearmCount == 0
+                                && self->_rootInstallInFlight
+                                && !timedOut);
+        if (initialSettling) {
+            NSLog(@"[MusicFree][CarPlay] watchdog round=%lu: initial install still settling, wait",
+                  (unsigned long)round);
+            [self scheduleRootWatchdogForController:ic round:(round + 1)];
+            return;
+        }
+
+        /* 5) exhausted：次数用尽且最后一次也超时 */
+        if (!self->_rootApplied && self->_rearmCount >= kMFMaxRearm && !self->_rearmPending && timedOut) {
+            self->_rootExhausted = YES;
+            self->_rootInstallInFlight = NO;
+            NSLog(@"[MusicFree][CarPlay] rearm exhausted after %lu attempts, stop polling (wait for system reconnect)",
+                  (unsigned long)self->_rearmCount);
+            return;
+        }
+
+        /* 4) rearm：给 completion 合理的 3s 回传窗口，且次数与并发都要满足 */
+        if (!self->_rootApplied && !self->_rearmPending && timedOut
+            && self->_rearmCount < kMFMaxRearm) {
+            self->_rearmCount += 1;
+            self->_rearmPending = YES;
+            self->_rootInstallInFlight = NO; /* 先清 inFlight，否则新调用会被挡 */
+            NSLog(@"[MusicFree][CarPlay] watchdog round=%lu: root not accepted, rearm #%lu/%lu",
+                  (unsigned long)round,
+                  (unsigned long)self->_rearmCount,
+                  (unsigned long)kMFMaxRearm);
+            [self installRootIfNeededAllowRearm:YES];
+            return;
+        }
+
+        /* 6) 总轮数兜底 */
+        if (round >= kMFWatchdogRounds) {
+            self->_rootExhausted = YES;
+            self->_rootInstallInFlight = NO;
+            NSLog(@"[MusicFree][CarPlay] rearm exhausted at round cap (%lu), stop polling",
+                  (unsigned long)round);
             return;
         }
         [self scheduleRootWatchdogForController:ic round:(round + 1)];
@@ -527,8 +841,7 @@ static id<NSObject> sDataObserverToken = nil;
 }
 
 - (void)refreshRootSections {
-    if (!_rootList || !_templateReady) {
-        /* 握手未结算：绝不做同步读，等 watchdog 解锁后自己会再调一次 */
+    if (!_rootList) {
         return;
     }
     CPInterfaceController *ic = self.interfaceController;
@@ -536,11 +849,21 @@ static id<NSObject> sDataObserverToken = nil;
         return;
     }
     /*
-     * 判据是「框架真相」而非 completion，且必须先通过 _templateReady 门。
-     * syncAppliedStateFromFramework 已包含 topTemplate == _rootList 判断。
+     * 推送闸门（避开 11142515 / 本轮两次自锁）：
+     *   - _rootApplied == YES（completion 明确成功 或 框架已确认）
+     *     -> **立刻推**，不再拿 topTemplate 复审。
+     *     否则会出现"completion 成功但 topTemplate 读抖动"导致的永久空屏。
+     *   - _rootApplied == NO -> 只能靠框架真相兜底，此时必须先过 _templateReady，
+     *     由 syncAppliedStateFromFramework 完成 topTemplate 读。
      */
-    if (![self syncAppliedStateFromFramework]) {
-        return;
+    if (!_rootApplied) {
+        if (!_templateReady) {
+            /* 握手未结算：绝不做同步读，watchdog 解锁后会再调一次 */
+            return;
+        }
+        if (![self syncAppliedStateFromFramework]) {
+            return;
+        }
     }
     NSArray<CPListSection *> *sections = [self currentRootSections];
     [_rootList updateSections:sections];
