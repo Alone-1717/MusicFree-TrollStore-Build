@@ -46,6 +46,9 @@ static id<NSObject> sDataObserverToken = nil;
 - (NSArray<CPListSection *> *)placeholderSections;
 - (NSArray<CPListSection *> *)currentRootSections;
 - (void)installRootIfNeeded;
+- (void)scheduleRootWatchdogForController:(CPInterfaceController *)ic;
+- (CPInterfaceController *)interfaceControllerFromScene:(UIScene *)scene;
+- (void)recoverTemplateScene:(UIScene *)scene reason:(NSString *)reason;
 - (void)refreshRootSections;
 - (void)pushTracksForSheet:(NSString *)sheetId title:(NSString *)title;
 - (NSArray<CPListItem *> *)buildTrackItems:(NSArray<NSDictionary *> *)tracks
@@ -63,7 +66,10 @@ static id<NSObject> sDataObserverToken = nil;
     BOOL _sheetsReceived;
     NSUInteger _setRootAttempts;
     BOOL _rootInstallInFlight;
+    BOOL _rootApplied;
     BOOL _observerOwnedByMe;
+    CFTimeInterval _lastRootInstallAt;
+    __weak CPTemplateApplicationScene *_templateScene;
 }
 
 #pragma mark - CPTemplateApplicationSceneDelegate
@@ -71,10 +77,18 @@ static id<NSObject> sDataObserverToken = nil;
 - (void)templateApplicationScene:(CPTemplateApplicationScene *)templateApplicationScene
     didConnectInterfaceController:(CPInterfaceController *)interfaceController
 {
+    _templateScene = templateApplicationScene;
     self.interfaceController = interfaceController;
     sActiveDelegate = self;
-    NSLog(@"[MusicFree][CarPlay] connected (phase1) controller=%p attempts=%lu",
-          (__bridge void *)interfaceController, (unsigned long)_setRootAttempts);
+
+    /* 新 controller 到来：旧的成功标记作废，允许重新安装 root */
+    if (sRootedController != interfaceController) {
+        _rootApplied = NO;
+        _rootInstallInFlight = NO;
+        _setRootAttempts = 0;
+    }
+    NSLog(@"[MusicFree][CarPlay] connected (phase1) controller=%p attempts=%lu applied=%d",
+          (__bridge void *)interfaceController, (unsigned long)_setRootAttempts, _rootApplied);
 
     [self registerDataObserverIfNeeded];
 
@@ -97,6 +111,7 @@ static id<NSObject> sDataObserverToken = nil;
     if (sRootedController == interfaceController) {
         sRootedController = nil;
     }
+    _templateScene = nil;
     self.interfaceController = nil;
     _rootList = nil;
     _currentSheetId = nil;
@@ -104,6 +119,85 @@ static id<NSObject> sDataObserverToken = nil;
     _sheetsReceived = NO;
     _setRootAttempts = 0;
     _rootInstallInFlight = NO;
+    _rootApplied = NO;
+}
+
+#pragma mark - UIScene 生命周期自愈
+/*
+ * 真机日志（11142315）证明：
+ *   setRootTemplate(animated:NO) 调用后立刻
+ *   `CarPlay <Error>: Connection interrupted` / `Connection invalidated`
+ *   而 `setRootTemplate success=...` 的 completion 从未回来。
+ * 原实现把 _rootInstallInFlight 永远置 YES，后续 didConnect 全被
+ * "in flight, skip" 挡掉 => 车机永久黑屏。
+ *
+ * 这里做两层兜底：
+ *   1) installRoot 时挂 watchdog，1.2s 内没拿到 success 就判失败并允许重装
+ *   2) scene 每次 becomeActive / willEnterForeground，从 CPTemplateApplicationScene
+ *      重新取 interfaceController（连接被 invalidate 后系统会给新的），
+ *      controller 身份变了就重置状态并重装 root
+ */
+- (CPInterfaceController *)interfaceControllerFromScene:(UIScene *)scene {
+    if (![scene isKindOfClass:[CPTemplateApplicationScene class]]) {
+        return nil;
+    }
+    id ic = nil;
+    @try {
+        ic = [(CPTemplateApplicationScene *)scene valueForKey:@"interfaceController"];
+    } @catch (NSException *e) {
+        (void)e;
+        ic = nil;
+    }
+    return [ic isKindOfClass:[CPInterfaceController class]] ? (CPInterfaceController *)ic : nil;
+}
+
+- (void)recoverTemplateScene:(UIScene *)scene reason:(NSString *)reason {
+    if (![scene isKindOfClass:[CPTemplateApplicationScene class]]) {
+        return;
+    }
+    _templateScene = (CPTemplateApplicationScene *)scene;
+
+    CPInterfaceController *sceneIC = [self interfaceControllerFromScene:scene];
+    CPInterfaceController *current = self.interfaceController;
+
+    if (sceneIC && sceneIC != current) {
+        NSLog(@"[MusicFree][CarPlay] rebind controller (%@) old=%p new=%p",
+              reason, (__bridge void *)current, (__bridge void *)sceneIC);
+        self.interfaceController = sceneIC;
+        sRootedController = nil;
+        _rootList = nil;
+        _rootInstallInFlight = NO;
+        _rootApplied = NO;
+        _setRootAttempts = 0;
+        [self registerDataObserverIfNeeded];
+        [self installRootIfNeeded];
+        [self requestSheetsNow];
+        return;
+    }
+
+    if (!_rootApplied) {
+        NSLog(@"[MusicFree][CarPlay] root not applied yet (%@), retry install", reason);
+        _rootInstallInFlight = NO;
+        sRootedController = nil;
+        /* scene 重新激活说明用户/车机又回到这个界面：重置预算，允许继续自愈 */
+        _setRootAttempts = 0;
+        [self installRootIfNeeded];
+    } else {
+        [self refreshRootSections];
+    }
+}
+
+- (void)sceneDidBecomeActive:(UIScene *)scene API_AVAILABLE(ios(13.0)) {
+    [self recoverTemplateScene:scene reason:@"didBecomeActive"];
+}
+
+- (void)sceneWillEnterForeground:(UIScene *)scene API_AVAILABLE(ios(13.0)) {
+    [self recoverTemplateScene:scene reason:@"willEnterForeground"];
+}
+
+- (void)sceneDidEnterBackground:(UIScene *)scene API_AVAILABLE(ios(13.0)) {
+    /* 进入后台不拆 root，只记录；连接若被系统 invalidate，回前台会重新绑定 */
+    NSLog(@"[MusicFree][CarPlay] scene entered background, keep root applied=%d", _rootApplied);
 }
 
 /*
@@ -215,25 +309,38 @@ static id<NSObject> sDataObserverToken = nil;
         return;
     }
 
-    /* 同一个 controller 已经装过 root：只刷新内容，绝不重设导航层级 */
-    if (_rootInstallInFlight) {
-        NSLog(@"[MusicFree][CarPlay] root install in flight, skip duplicate setRootTemplate");
-        return;
-    }
-
-    /* 同一个 controller 已经装过 root：只刷新内容，绝不重设导航层级 */
-    if (sRootedController == ic && _rootList && ic.topTemplate) {
+    /* 同一个 controller 已经成功装过 root：只刷新内容，绝不重设导航层级 */
+    if (sRootedController == ic && _rootApplied && _rootList && ic.topTemplate) {
         NSLog(@"[MusicFree][CarPlay] root already installed, updateSections only");
         [self refreshRootSections];
         return;
     }
 
-    if (_setRootAttempts >= 2) {
+    /*
+     * 关键修复：in-flight 只挡「同一轮」的并发调用，绝不永久锁死。
+     * 11142315 真机日志里 completion 因为 Connection interrupted 根本没回来，
+     * 旧代码在这里 return 之后再无任何重试机会 => 永久黑屏。
+     * 现在 in-flight 时直接放行重装（setRootTemplate 本身幂等，
+     * 重复设置同一个 template 不会崩）。
+     */
+    if (_rootInstallInFlight) {
+        /* 同一轮 0.6s 内的重复调用才真正跳过，避免 setRootTemplate 风暴；
+           超过 0.6s 说明 completion 大概率丢了，必须放行重装。 */
+        CFTimeInterval elapsed = CFAbsoluteTimeGetCurrent() - _lastRootInstallAt;
+        if (elapsed < 0.6) {
+            NSLog(@"[MusicFree][CarPlay] root install in flight %.2fs, skip", elapsed);
+            return;
+        }
+        NSLog(@"[MusicFree][CarPlay] root install in flight %.2fs, retry anyway", elapsed);
+    }
+
+    if (_setRootAttempts >= 6) {
         NSLog(@"[MusicFree][CarPlay] setRootTemplate attempts exhausted, keep placeholder");
         return;
     }
     _setRootAttempts += 1;
     _rootInstallInFlight = YES;
+    _lastRootInstallAt = CFAbsoluteTimeGetCurrent();
 
     CPListTemplate *list = [[CPListTemplate alloc] initWithTitle:@"音乐"
                                                         sections:[self placeholderSections]];
@@ -244,24 +351,59 @@ static id<NSObject> sDataObserverToken = nil;
     [ic setRootTemplate:list
                animated:NO
              completion:^(BOOL success, NSError * _Nullable error) {
-                 NSLog(@"[MusicFree][CarPlay] setRootTemplate success=%d error=%@",
-                       success, error.localizedDescription);
                  __strong __typeof(weakSelf) self = weakSelf;
                  if (!self) {
                      return;
                  }
+                 NSLog(@"[MusicFree][CarPlay] setRootTemplate success=%d error=%@",
+                       success, error.localizedDescription);
                  self->_rootInstallInFlight = NO;
-                  if (!success) {
-                     /* 失败只清一次身份，交给下一次 didConnect 再试；
-                        attempts 上限防止无限震荡 */
-                     if (self->_setRootAttempts < 2) {
-                         sRootedController = nil;
-                     }
+                 if (!success) {
+                     self->_rootApplied = NO;
+                     sRootedController = nil;
                      return;
                  }
+                 self->_rootApplied = YES;
                  [self refreshRootSections];
              }];
-    NSLog(@"[MusicFree][CarPlay] native placeholder root installed (animated=NO)");
+    NSLog(@"[MusicFree][CarPlay] native placeholder root installed (animated=NO) attempt=%lu",
+          (unsigned long)_setRootAttempts);
+
+    [self scheduleRootWatchdogForController:ic];
+}
+
+/* completion 在连接被打断时可能永远不回调：1.2s 后自检，失败就允许重装 */
+- (void)scheduleRootWatchdogForController:(CPInterfaceController *)ic {
+    __weak __typeof(self) weakSelf = self;
+    NSUInteger attempt = _setRootAttempts;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        __strong __typeof(weakSelf) self = weakSelf;
+        if (!self) {
+            return;
+        }
+        if (self->_rootApplied) {
+            return;
+        }
+        if (self.interfaceController != ic) {
+            return;
+        }
+        NSLog(@"[MusicFree][CarPlay] root watchdog fired attempt=%lu applied=0, recover",
+              (unsigned long)attempt);
+        self->_rootInstallInFlight = NO;
+        sRootedController = nil;
+
+        /* 优先从 template scene 取新 controller（连接被 invalidate 后系统会换） */
+        UIScene *scene = self->_templateScene;
+        CPInterfaceController *fresh = scene ? [self interfaceControllerFromScene:scene] : nil;
+        if (fresh && fresh != ic) {
+            self.interfaceController = fresh;
+            self->_setRootAttempts = 0;
+            NSLog(@"[MusicFree][CarPlay] watchdog rebound to fresh controller=%p",
+                  (__bridge void *)fresh);
+        }
+        [self installRootIfNeeded];
+    });
 }
 
 - (void)refreshRootSections {

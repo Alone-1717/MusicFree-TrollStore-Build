@@ -1,5 +1,7 @@
 #import "AppDelegate.h"
+#import "CarPlaySceneDelegate.h"
 
+#import <CarPlay/CarPlay.h>
 #import <React/RCTBundleURLProvider.h>
 
 @implementation AppDelegate
@@ -27,6 +29,39 @@
 #else
   return [[NSBundle mainBundle] URLForResource:@"main" withExtension:@"jsbundle"];
 #endif
+}
+
+#pragma mark - Scene 配置（多场景开启后按 role 显式分发）
+
+/*
+ * UIApplicationSupportsMultipleScenes = YES 之后，系统同时持有
+ * 主界面 UIWindowScene 和 CarPlay CPTemplateApplicationScene。
+ * 必须显式给每个 role 返回配置，否则 CarPlay 场景会落到主 App 的
+ * AppDelegate 上（它不实现 CPTemplateApplicationSceneDelegate），
+ * 结果是模板场景没有 delegate => 车机黑屏。
+ */
+- (UISceneConfiguration *)application:(UIApplication *)application
+    configurationForConnectingSceneSession:(UISceneSession *)connectingSceneSession
+                                   options:(UISceneConnectionOptions *)options API_AVAILABLE(ios(13.0))
+{
+    NSString *role = connectingSceneSession.role;
+    BOOL isCarPlay = NO;
+    if (@available(iOS 14.0, *)) {
+        isCarPlay = [role isEqualToString:CPTemplateApplicationSceneSessionRoleApplication];
+    }
+
+    NSString *name = isCarPlay ? @"CarPlay" : @"Default Configuration";
+    UISceneConfiguration *config =
+        [[UISceneConfiguration alloc] initWithName:name sessionRole:role];
+
+    if (isCarPlay) {
+        config.delegateClass = [MFCarPlaySceneDelegate class];
+        NSLog(@"[MusicFree] scene config -> CarPlay delegate");
+    } else {
+        config.delegateClass = [AppDelegate class];
+        NSLog(@"[MusicFree] scene config -> main app delegate role=%@", role);
+    }
+    return config;
 }
 
 #pragma mark - UISceneDelegate (main app window)
@@ -83,6 +118,15 @@
     AppDelegate *realDelegate = (AppDelegate *)UIApplication.sharedApplication.delegate;
     UIWindow *win = realDelegate.window;
     if (win) {
+      /*
+       * 多场景开启后系统可能为 CarPlay/主界面各建一次连接回调。
+       * 只在 window 尚未归属任何 scene（或本来就是本 scene）时 attach，
+       * 避免把已经在主界面显示的 window 抢到另一个 scene 上。
+       */
+      if (win.windowScene && win.windowScene != ws) {
+        NSLog(@"[MusicFree] skip attach: window already in another scene");
+        return;
+      }
       // 关键：把 RN 的 legacy window 关联到 UIWindowScene 并成为 key window
       [win setWindowScene:ws];
       [win makeKeyAndVisible];

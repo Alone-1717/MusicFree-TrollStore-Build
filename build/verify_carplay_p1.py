@@ -37,6 +37,10 @@ chk("不用 CPListTemplateDelegate（签名差异）", "didSelectListItem" not i
 chk("原生占位首屏", "placeholderSections" in cm and "正在加载歌单" in cm)
 chk("root 幂等 + animated:NO", "installRootIfNeeded" in cm and "sRootedController == ic" in cm and "animated:NO" in cm)
 chk("root 带 completion", "setRootTemplate:list" in cm and "completion:^" in cm and "BOOL success" in cm)
+chk("root completion 超时自愈", "scheduleRootWatchdogForController" in cm and "root watchdog fired" in cm)
+chk("root 成功标记 _rootApplied", "_rootApplied" in cm and "self->_rootApplied = YES" in cm)
+chk("in-flight 不再永久锁死", "retry anyway" in cm and "_lastRootInstallAt" in cm)
+chk("scene 生命周期重绑 controller", "recoverTemplateScene" in cm and "sceneDidBecomeActive" in cm and "interfaceControllerFromScene" in cm)
 chk("点歌单 push", "pushTracksForSheet" in cm)
 chk("点曲目发播放事件", "emitPlayTrack" in cm)
 chk("数据到达只 updateSections", "handleDataUpdate" in cm and "updateSections" in cm and "rebuildRoot" not in cm)
@@ -83,6 +87,13 @@ w = cfgs.get("UIWindowSceneSessionRoleApplication", [{}])
 c = cfgs.get("CPTemplateApplicationSceneSessionRoleApplication", [{}])
 chk("主场景 delegateClass=AppDelegate", w and w[0].get("UISceneDelegateClassName") == "AppDelegate")
 chk("CarPlay delegateClass=MFCarPlaySceneDelegate", c and c[0].get("UISceneDelegateClassName") == "MFCarPlaySceneDelegate")
+chk("允许多场景（CarPlay + 主界面共存）",
+    (pl.get("UIApplicationSceneManifest") or {}).get("UIApplicationSupportsMultipleScenes") is True)
+ad = io.open(os.path.join(ROOT, "ios", "MusicFree", "AppDelegate.mm"), encoding="utf-8").read()
+chk("AppDelegate 按 role 分发 scene 配置",
+    "configurationForConnectingSceneSession" in ad
+    and "CPTemplateApplicationSceneSessionRoleApplication" in ad
+    and "[MFCarPlaySceneDelegate class]" in ad)
 
 # 8) 既有自检
 r = subprocess.run(["node", "scripts/verify-ios-patch.mjs"], cwd=ROOT, capture_output=True, timeout=120)

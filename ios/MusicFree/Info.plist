@@ -83,12 +83,17 @@
 	    - CPTemplateApplicationSceneSessionRoleApplication -> MFCarPlaySceneDelegate
 	      v11141849 已验证这样车机能出图标；保留不动
 	  不指定 UISceneStoryboardFile，避免老 nib 在 16.1.1 上解码崩溃。
-	  UIApplicationSupportsMultipleScenes=NO 防 RN 起第二份。
+	  UIApplicationSupportsMultipleScenes=YES：CarPlay 模板场景与 iPhone
+	  主界面必须能同时存在。之前设 NO 时真机日志反复出现
+	  `Workspace connection invalidated` / `Connection interrupted`，
+	  CPInterfaceController 在 setRootTemplate 后被系统回收 => 车机黑屏。
+	  RN 只会由 didFinishLaunching 建一份 window，scene 回调里只 attach，
+	  不会起第二份 RN。
 	-->
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
-		<false/>
+		<true/>
 		<key>UISceneConfigurations</key>
 		<dict>
 			<key>UIWindowSceneSessionRoleApplication</key>
