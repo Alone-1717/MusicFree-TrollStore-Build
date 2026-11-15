@@ -97,6 +97,18 @@ static const NSUInteger kMFMaxRearm = 2;
 static const NSTimeInterval kMFInstallSettleWindow = 3.0;
 static const NSTimeInterval kMFWatchdogTick = 1.5;
 static const NSUInteger kMFWatchdogRounds = 12;
+/*
+ * _rootExhausted 自动恢复的节流参数（11142630）。
+ *
+ * willEnterForeground / didBecomeActive 常同秒连续触发，若无节制 reset
+ * 会形成"reset -> install -> timedOut -> exhausted"快速循环，
+ * 日志难读且无意义。两道闸：
+ *   1) 距上次 reset 至少 3s
+ *   2) 同一 controller 内最多 2 次
+ * 换 controller（真重连）时两者都清零，仍享完整机会。
+ */
+static const NSTimeInterval kMFResetMinInterval = 3.0;
+static const NSUInteger kMFMaxResets = 2;
 
 /* 进程级幂等状态：scene 反复 activate 时不会重复注册 / 重复设 root */
 static __weak CPInterfaceController *sRootedController = nil;
@@ -153,6 +165,14 @@ static id<NSObject> sDataObserverToken = nil;
     BOOL _rearmPending;
     NSTimeInterval _lastInstallAt;
     BOOL _rootExhausted;
+    /*
+     * _rootExhausted 自动恢复的节流状态（11142630）。
+     *   _resetCount  本 controller 内已 reset 次数，上限 kMFMaxResets
+     *   _lastResetAt 上次 reset 时刻，用于 3s 最小间隔
+     * 两者在 didConnect / rebind 换 controller 时清零。
+     */
+    NSUInteger _resetCount;
+    NSTimeInterval _lastResetAt;
     /*
      * 每次 setRootTemplate 递增；completion 闭包捕获当时值，
      * 回来时 != 当前值 -> 丢弃（防晚到回调打乱状态）。
@@ -364,6 +384,9 @@ static id<NSObject> sDataObserverToken = nil;
     _rearmCount = 0;
     _rearmPending = NO;
     _rootExhausted = NO;
+    /* 换 controller / 重置状态：reset 节流额度恢复 */
+    _resetCount = 0;
+    _lastResetAt = 0;
     _lastInstallAt = 0;
     _rootGeneration += 1;      /* 作废所有在途 completion */
     _controllerInvalidated = YES;
@@ -430,6 +453,9 @@ static id<NSObject> sDataObserverToken = nil;
         _rearmCount = 0;
         _rearmPending = NO;
         _rootExhausted = NO;
+        /* 换 controller / 重置状态：reset 节流额度恢复 */
+        _resetCount = 0;
+        _lastResetAt = 0;
         _lastInstallAt = 0;
         _rootGeneration += 1;          /* 作废旧 controller 的在途 completion */
     }
@@ -548,6 +574,9 @@ static id<NSObject> sDataObserverToken = nil;
         _rearmCount = 0;
         _rearmPending = NO;
         _rootExhausted = NO;
+        /* 换 controller / 重置状态：reset 节流额度恢复 */
+        _resetCount = 0;
+        _lastResetAt = 0;
         _lastInstallAt = 0;
         _rootGeneration += 1;          /* 作废旧 controller 的在途 completion */
         _controllerInvalidated = NO;   /* 新 controller 视为有效 */
@@ -583,10 +612,53 @@ static id<NSObject> sDataObserverToken = nil;
      * 那条路本来就会重置一切，不会被这里干扰。
      */
     if (!_rootApplied && !confirmed && _rootExhausted && self.interfaceController) {
+        /*
+         * ============ 节流：同一个 controller 内只允许有限次 reset ============
+         *
+         * 为什么要节流：
+         *   willEnterForeground 和 didBecomeActive 经常在**同一秒**连续触发
+         *   （11142629 日志 05:37:41 两行同秒）。若每次场景激活都无条件 reset
+         *   并立即重试，日志会出现：
+         *     RESET -> install -> 3s timedOut -> exhausted
+         *     RESET -> install -> 3s timedOut -> exhausted
+         *   —— 看起来像无限循环，实际只是场景回调密集触发，会让日志难读。
+         *
+         * 节流规则（两道）：
+         *   1) 时间窗口：距上次 reset 不足 kMFResetMinInterval(3s) 直接跳过。
+         *   2) 总次数上限：同一 controller 内最多 kMFMaxResets(2) 次。
+         *      超过就不再 reset —— 说明这不是"场景抖动"，而是真的修不好，
+         *      继续重试只会刷日志，等用户拔线重连（那条路会重置一切）。
+         *
+         * 计数与时间戳都绑定在 controller 上：didConnect / rebind 换 controller
+         * 时会被清零，所以"换个 controller 重连"仍享有完整的两次机会。
+         */
+        NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+        BOOL withinWindow = (_lastResetAt > 0)
+                         && ((now - _lastResetAt) < kMFResetMinInterval);
+        BOOL overQuota = (_resetCount >= kMFMaxResets);
+
+        if (withinWindow || overQuota) {
+            MFCarPlayLogBoth(@"RESET skipped (%@): withinWindow=%d(%.1fs) "
+                             @"resetCount=%lu/%lu overQuota=%d — avoid retry storm",
+                  reason,
+                  withinWindow,
+                  (_lastResetAt > 0) ? (now - _lastResetAt) : -1.0,
+                  (unsigned long)_resetCount,
+                  (unsigned long)kMFMaxResets,
+                  overQuota);
+            return;
+        }
+
+        _resetCount += 1;
+        _lastResetAt = now;
         MFCarPlayLogBoth(@"RESET exhausted on scene reactivation (%@): "
-                         @"same controller, applied=0, framework still not confirming — retry once",
-              reason);
+                         @"same controller, applied=0, framework still not confirming — "
+                         @"retry %lu/%lu",
+              reason, (unsigned long)_resetCount, (unsigned long)kMFMaxResets);
         _rootExhausted = NO;
+        /* 换 controller / 重置状态：reset 节流额度恢复 */
+        _resetCount = 0;
+        _lastResetAt = 0;
         _rearmCount = 0;
         _rearmPending = NO;
         _rootInstallInFlight = NO;
