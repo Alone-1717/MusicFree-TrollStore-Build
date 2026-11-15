@@ -19,6 +19,71 @@ import { TrackPlayerEvents } from "@/core.defination/trackPlayer";
 import { IPluginManager } from "@/types/core/pluginManager";
 
 
+/* ============ 11142656：歌词匹配放宽 ============ */
+
+/**
+ * 去掉标题里的常见后缀，提取「核心标题」。
+ *
+ * 例：
+ *   晴天 (Live)        -> 晴天
+ *   晴天（伴奏）        -> 晴天
+ *   夜曲 - Remix       -> 夜曲
+ *   七里香 Live版       -> 七里香
+ */
+function coreTitle(raw?: string): string {
+    if (!raw) {
+        return "";
+    }
+    let s = raw.trim();
+    // 去掉中英文括号及其内容
+    s = s.replace(/[（(\[【][^）)\]】]*[）)\]】]/g, "");
+    // 去掉 " - xxx" 之后的部分
+    s = s.replace(/\s+-\s+.*$/, "");
+    // 去掉常见的版本词（不含空格的情况）
+    s = s.replace(/(live|remix|伴奏|纯音乐|instrumental|cover|翻唱)/gi, "");
+    return s.trim().toLowerCase();
+}
+
+/**
+ * 把歌手串拆成集合。
+ * 支持分隔符：/ 、 & , ； 空格
+ *
+ * 例：
+ *   周杰伦/JVR       -> [周杰伦, jvr]
+ *   周杰伦 & 费玉清   -> [周杰伦, 费玉清]
+ */
+function artistSet(raw?: string): string[] {
+    if (!raw) {
+        return [];
+    }
+    return raw
+        .split(/[\/、&,，;；]/)
+        .map((x) => x.trim().toLowerCase())
+        .filter((x) => x.length > 0);
+}
+
+/**
+ * 两个歌手串是否有交集（任一相同即可）。
+ */
+function artistOverlap(a?: string, b?: string): boolean {
+    const sa = artistSet(a);
+    const sb = artistSet(b);
+    if (!sa.length || !sb.length) {
+        return false;
+    }
+    return sa.some((x) => sb.includes(x));
+}
+
+/**
+ * 是否是「伴奏/纯音乐」这类特殊版本 —— 这类不拿来匹配原曲歌词。
+ */
+function isInstrumental(raw?: string): boolean {
+    if (!raw) {
+        return false;
+    }
+    return /(伴奏|纯音乐|instrumental|karaoke|off\s*vocal)/i.test(raw);
+}
+
 interface ILyricState {
     loading: boolean;
     lyrics: IParsedLrcItem[];
@@ -373,24 +438,79 @@ class LyricManager implements IInjectable {
             // 取前两个
             const firstTwo = results?.data?.slice(0, 2) || [];
 
+            /*
+             * 11142656：分层匹配（放宽但带安全约束）。
+             *
+             * 原逻辑只有「标题+歌手完全相等」才算命中，条件过严，
+             * 标题带 (Live)/(Remix)、歌手写成 "周杰伦/JVR" 就匹配不到。
+             *
+             * 三层：
+             *   第1层 distance=0  完全相等        -> 直接用，停止搜索
+             *   第2层 distance=1  核心标题相同 + 歌手有交集
+             *   第3层 distance=2  标题包含 + 歌手有交集
+             *
+             * 安全约束：
+             *   - 第2/3层必须歌手有交集（不能只标题像）
+             *   - 跳过「伴奏/纯音乐」候选（不给原曲配伴奏歌词）
+             *   - 最多采用 distance<=2，超了放弃（宁可没歌词也不给错的）
+             */
             for (let item of firstTwo) {
-                if (
-                    item.title === keyword &&
-                    item.artist === musicItem.artist
-                ) {
+                /* 跳过伴奏/纯音乐候选 */
+                if (isInstrumental(item.title)) {
+                    continue;
+                }
+
+                const exactTitle = item.title === keyword;
+                const exactArtist = item.artist === musicItem.artist;
+
+                /* 第1层：完全相等 */
+                if (exactTitle && exactArtist) {
                     distance = 0;
                     minDistanceMusicItem = item;
                     targetPlugin = plugin;
                     break;
-                } else {
-                    const dist =
-                        minDistance(keyword, musicItem.title) +
-                        minDistance(item.artist, musicItem.artist);
-                    if (dist < distance) {
-                        distance = dist;
+                }
+
+                /* 后续层必须有歌手交集 */
+                if (!artistOverlap(item.artist, musicItem.artist)) {
+                    continue;
+                }
+
+                const ct1 = coreTitle(item.title);
+                const ct2 = coreTitle(keyword) || coreTitle(musicItem.title);
+
+                /* 第2层：核心标题相同 */
+                if (ct1.length > 0 && ct1 === ct2) {
+                    if (1 < distance) {
+                        distance = 1;
                         minDistanceMusicItem = item;
                         targetPlugin = plugin;
                     }
+                    continue;
+                }
+
+                /* 第3层：标题互相包含 */
+                if (
+                    ct1.length > 1 &&
+                    ct2.length > 1 &&
+                    (ct1.includes(ct2) || ct2.includes(ct1))
+                ) {
+                    if (2 < distance) {
+                        distance = 2;
+                        minDistanceMusicItem = item;
+                        targetPlugin = plugin;
+                    }
+                    continue;
+                }
+
+                /* 兜底：原来的编辑距离，但加上限（>2 不采用） */
+                const dist =
+                    minDistance(keyword, musicItem.title) +
+                    minDistance(item.artist, musicItem.artist);
+                if (dist < distance && dist <= 2) {
+                    distance = dist;
+                    minDistanceMusicItem = item;
+                    targetPlugin = plugin;
                 }
             }
 
@@ -399,7 +519,12 @@ class LyricManager implements IInjectable {
             }
         }
 
-        if (minDistanceMusicItem && targetPlugin) {
+        /*
+         * 11142656：距离上限 2。
+         * 超过说明候选差异太大，宁可返回 null（显示无歌词），
+         * 也不给用户配错版本的歌词。
+         */
+        if (minDistanceMusicItem && targetPlugin && distance <= 2) {
             return await targetPlugin.methods
                 .getLyric(minDistanceMusicItem)
                 .catch(() => null);
