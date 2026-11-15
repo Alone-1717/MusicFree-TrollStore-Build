@@ -242,6 +242,51 @@ static id<NSObject> sDataObserverToken = nil;
     MFCarPlayLogBoth(@"templateDidAppear template=%p isList=%d sameAsRoot=%d animated=%d applied=%d",
           (__bridge void *)template, isList, isSameObject, animated, _rootApplied);
 
+    /*
+     * 补上屏内容证据（评审指出的盲区）：
+     *   "one-shot armed (sections=K)" 和 "refresh: data ready sections=K"
+     *   只能证明**我自己读到的数据两次一致**，证明不了模板真的带着 K 个
+     *   section 送到了车机。
+     *
+     * 这里在模板刚上屏时，反过来问模板对象**它自己现在持有几个 section / item**。
+     * 对照关系：
+     *   onScreenSections > 0 且 onScreenItems > 0  -> 模板内容正确，若车机还空，
+     *                                                  问题在渲染端不在数据端
+     *   onScreenSections > 0 但 onScreenItems == 0 -> CPListItem 构造有问题
+     *   onScreenSections == 0                      -> 首屏建模板时 sections 就是空的
+     *
+     * CPListTemplate 没有公开的 sections 读取属性，用 KVC 兜住（失败不影响流程）。
+     */
+    if (isSameObject && _rootList) {
+        NSUInteger onScreenSections = 0;
+        NSUInteger onScreenItems = 0;
+        @try {
+            id secs = [_rootList valueForKey:@"sections"];
+            if ([secs isKindOfClass:[NSArray class]]) {
+                onScreenSections = [(NSArray *)secs count];
+                for (id s in (NSArray *)secs) {
+                    id items = nil;
+                    @try { items = [s valueForKey:@"items"]; } @catch (NSException *e) { (void)e; }
+                    if ([items isKindOfClass:[NSArray class]]) {
+                        onScreenItems += [(NSArray *)items count];
+                    }
+                }
+            }
+        } @catch (NSException *e) {
+            MFCarPlayLogBoth(@"onScreen probe threw: %@", e.reason);
+        }
+        MFCarPlayLogBoth(@"ON-SCREEN CONTENT: sections=%lu items=%lu (template=%p)",
+              (unsigned long)onScreenSections, (unsigned long)onScreenItems,
+              (__bridge void *)_rootList);
+        if (onScreenSections == 0) {
+            MFCarPlayLogBoth(@"WARN: template on screen but ZERO sections — "
+                             @"first-frame template was built empty");
+        } else if (onScreenItems == 0) {
+            MFCarPlayLogBoth(@"WARN: sections present but ZERO items — "
+                             @"check CPListItem construction");
+        }
+    }
+
     if (isList) {
         BOOL wasApplied = _rootApplied;
         _rootApplied = YES;
@@ -892,11 +937,25 @@ static id<NSObject> sDataObserverToken = nil;
     }
     CPTemplate *top = ic.topTemplate;
     if (_rootList && top == _rootList) {
-        if (!_rootApplied) {
-            MFCarPlayLogBoth(@"framework confirms root is top (completion lost), applied=1");
-        }
+        /*
+         * 措辞必须准确：这里只能证明「框架当前认定的 top 就是我们的模板」。
+         * 不能断言 completion 丢过 —— 那是推断，不是观测。
+         *
+         * 真正的诊断价值在于它出现的**时机**：
+         *   - 出现在 templateDidAppear 之前
+         *     -> 框架早已接受模板，只是那次 setRootTemplate 的 completion
+         *        还没回来。属于回调机制问题（可能在线程/队列上丢了），
+         *        不是模板类型/entitlement 问题。
+         *   - 从不出现，且 templateDidAppear 也不来
+         *     -> 才去看 setRootTemplate FAILED ... domain=... 那行。
+         */
+        BOOL firstConfirm = !_rootApplied;
         _rootApplied = YES;
         _rootInstallInFlight = NO;
+        if (firstConfirm) {
+            MFCarPlayLogBoth(@"SYNC CONFIRM: topTemplate IS our root (applied=1) — "
+                             @"framework accepted it, completion never returned");
+        }
         return YES;
     }
     return NO;
@@ -1084,7 +1143,11 @@ static id<NSObject> sDataObserverToken = nil;
          * 该核对内部有 _templateReady 门，握手未结算时不会碰同步属性。
          */
         if (_templateReady && [self syncAppliedStateFromFramework]) {
-            MFCarPlayLogBoth(@"refresh: applied via framework check (completion was lost)");
+            /*
+             * 内层 syncAppliedStateFromFramework 已打过 SYNC CONFIRM，
+             * 这里只标记"本次是 refresh 触发路径"，不再重复断言 completion 丢了。
+             */
+            MFCarPlayLogBoth(@"refresh: applied via sync-confirm path");
         } else {
             MFCarPlayLogBoth(@"refresh: root not applied yet, cache only (%lu sections)",
                   (unsigned long)sections.count);

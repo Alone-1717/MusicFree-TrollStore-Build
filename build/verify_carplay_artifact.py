@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142626"
+EXPECTED_VERSION = "11142627"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -26,7 +26,6 @@ BINARY_MARKERS = [
     b"one-shot root install armed",
     b"no retry (waiting framework)",
     b"keep root, no reinstall",
-    b"framework confirms root is top",
     b"applied=0 inFlight=",
     b"sync probe unlocked",
     b"carplay.1.log",
@@ -46,6 +45,11 @@ BINARY_MARKERS = [
     b"rearm succeeded, repush sections to fresh template",
     b"initial root succeeded, push sections",
     b"didConnect ctrl new=%p old=%p same=%d",
+    b"SYNC CONFIRM: topTemplate IS our root",
+    b"ON-SCREEN CONTENT: sections=",
+    b"applied via sync-confirm path",
+    b"template on screen but ZERO sections",
+
     b"didConnect ctrl=%p (template-only audio path)",
     b"ROOT TEMPLATE VISIBLE",
     b"templateDidAppear template=%p isList=",

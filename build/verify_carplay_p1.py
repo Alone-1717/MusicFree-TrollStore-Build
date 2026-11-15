@@ -58,7 +58,7 @@ chk("生命周期不重装 root", "keep root, no reinstall" in cm_code
     and "retry install" not in cm_code)
 chk("不靠 completion 判定成功（framework 真相）",
     "syncAppliedStateFromFramework" in cm_code
-    and "framework confirms root is top" in cm_code)
+    and "SYNC CONFIRM: topTemplate IS our root" in cm_code)
 # --- 11142616 新增：同步 XPC 隔离（真凶修复） ---
 _install_match = re.search(r"-\s*\(void\)\s*installRootIfNeeded\s*\{([\s\S]*?)\n\}\n", cm_code)
 _install_body = _install_match.group(1) if _install_match else ""
