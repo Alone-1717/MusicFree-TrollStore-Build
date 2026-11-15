@@ -214,6 +214,30 @@ static void MFLoadCoverIntoCell(NSString *urlStr, UITableViewCell *cell) {
  * 纯黑 #000000 在车机屏上对比太硬、边缘看不出层次。
  * 用 #1C1C1E —— iOS 深色模式下系统级的次级背景色。
  */
+/*
+ * 11142658：由曲目 dict 直接构造播放页数据（不读 MMKV）。
+ *
+ * 解决「点的歌和播放页显示不一致」：
+ *   点歌后 JS 处理有延迟，MMKV 还没更新，读它会拿到上一首。
+ *   点歌这一刻我们手里有这首歌的完整数据，直接用它。
+ */
+static NSDictionary *MFNowPlayingFromTrack(NSDictionary *track) {
+    if (![track isKindOfClass:[NSDictionary class]]) {
+        return nil;
+    }
+    return @{
+        @"id": track[@"id"] ?: @"",
+        @"title": track[@"title"] ?: @"",
+        @"artist": track[@"artist"] ?: @"",
+        @"album": track[@"album"] ?: @"",
+        @"artwork": track[@"artwork"] ?: @"",
+        @"platform": track[@"platform"] ?: @"",
+        @"duration": @(0),
+        @"progress": @(0),
+        @"queueCount": @(0),
+    };
+}
+
 static UIColor *MFCarPlayBackgroundColor(void) {
     return [UIColor colorWithRed:0.11 green:0.11 blue:0.12 alpha:1.0];   /* #1C1C1E */
 }
@@ -255,9 +279,14 @@ static void MFAddBackButton(UIViewController *vc) {
      *
      * 下移到 34，正好在状态栏下方、内容区上方。
      */
+    /*
+     * 11142658：按用户反馈调整。
+     *   - 整体上移：top 34 -> 14（原来离状态栏太远，中间空一条）
+     *   - 返回键右移：leading 16 -> 34（原来贴左边太紧）
+     */
     [NSLayoutConstraint activateConstraints:@[
-        [b.topAnchor constraintEqualToAnchor:vc.view.topAnchor constant:34],
-        [b.leadingAnchor constraintEqualToAnchor:vc.view.leadingAnchor constant:16],
+        [b.topAnchor constraintEqualToAnchor:vc.view.topAnchor constant:14],
+        [b.leadingAnchor constraintEqualToAnchor:vc.view.leadingAnchor constant:34],
         [b.widthAnchor constraintEqualToConstant:120],
         [b.heightAnchor constraintEqualToConstant:44],
     ]];
@@ -281,9 +310,9 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     l.translatesAutoresizingMaskIntoConstraints = NO;
     [vc.view addSubview:l];
     [NSLayoutConstraint activateConstraints:@[
-        [l.topAnchor constraintEqualToAnchor:vc.view.topAnchor constant:34],
+        [l.topAnchor constraintEqualToAnchor:vc.view.topAnchor constant:14],
         [l.centerXAnchor constraintEqualToAnchor:vc.view.centerXAnchor],
-        [l.leadingAnchor constraintGreaterThanOrEqualToAnchor:vc.view.leadingAnchor constant:150],
+        [l.leadingAnchor constraintGreaterThanOrEqualToAnchor:vc.view.leadingAnchor constant:160],
         [l.trailingAnchor constraintLessThanOrEqualToAnchor:vc.view.trailingAnchor constant:-20],
         [l.heightAnchor constraintEqualToConstant:44],
     ]];
@@ -731,11 +760,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
     if (showSearch) {
         [self.view bringSubviewToFront:self.searchField];
-        /* 延迟一点，等 tab 切换的布局完成再唤起键盘 */
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self.searchField becomeFirstResponder];
-            MFCarPlayLogBoth(@"ROOT search tab: becomeFirstResponder called");
-        });
+        [self activateSearchKeyboard];
     } else {
         [self.searchField resignFirstResponder];
     }
@@ -747,11 +772,55 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         self.sheets = [self.carPlayDelegate historyForCarPlay] ?: @[];
     } else {
         self.results = @[];
-        [self.searchField becomeFirstResponder];   /* 唤起车机键盘 */
     }
     [self.table reloadData];
 
     MFCarPlayLogBoth(@"ROOT tab -> %ld (0=sheets 1=search 2=history)", (long)tag);
+}
+
+/*
+ * ============ 11142658：搜索键盘唤起（带诊断）============
+ *
+ * 用户反馈：点搜索 tab，键盘弹不出来。
+ *
+ * CarPlay 窗口路径的难点：
+ *   键盘（UIKeyboard）挂在 key window 上。CarPlay 场景下
+ *   我们的 UIWindow 可能不是 key window（SpringBoard 的窗口才是），
+ *   所以 becomeFirstResponder 返回 YES 但键盘不显示。
+ *
+ * 这里做三件事：
+ *   1) 强制我们的窗口成为 key window
+ *   2) 三阶段重试唤起（0ms / 150ms / 400ms），应对时序
+ *   3) 每步都打日志，便于定位到底卡在哪
+ */
+- (void)activateSearchKeyboard {
+    UIWindow *win = self.view.window;
+
+    MFCarPlayLogBoth(@"SEARCH kb: win=%@ isKey=%d fieldAlpha=%.1f interaction=%d",
+          win ? @"yes" : @"nil",
+          (int)win.isKeyWindow,
+          self.searchField.alpha,
+          (int)self.searchField.userInteractionEnabled);
+
+    /* 1) 强制 key window */
+    if (win && !win.isKeyWindow) {
+        [win makeKeyWindow];
+        MFCarPlayLogBoth(@"SEARCH kb: forced makeKeyWindow, now isKey=%d",
+              (int)win.isKeyWindow);
+    }
+
+    /* 2) 三阶段重试 */
+    NSArray<NSNumber *> *delays = @[@0, @0.15, @0.4];
+    for (NSNumber *d in delays) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                     (int64_t)(d.doubleValue * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            BOOL ok = [self.searchField becomeFirstResponder];
+            MFCarPlayLogBoth(@"SEARCH kb: becomeFirstResponder after %.2fs -> %d (isFirst=%d)",
+                  d.doubleValue, (int)ok,
+                  (int)self.searchField.isFirstResponder);
+        });
+    }
 }
 
 - (void)reloadSheets {
@@ -850,9 +919,11 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         MFCarPlayLogBoth(@"ROOT history tap row=%ld track=%@", (long)indexPath.row, tid);
         [MFCarPlayBridge emitPlayTrack:tid sheetId:@""];
 
+        /* 11142658：用点中的那条数据，不读 MMKV（避免竞态显示旧歌） */
+        NSDictionary *picked = self.sheets[(NSUInteger)indexPath.row];
         MFCarPlayWindowNowPlayingVC *np = [[MFCarPlayWindowNowPlayingVC alloc] init];
         np.carPlayDelegate = self.carPlayDelegate;
-        np.nowPlaying = [self.carPlayDelegate nowPlayingForCarPlay];
+        np.nowPlaying = MFNowPlayingFromTrack(picked);
         [self.navigationController pushViewController:np animated:YES];
         return;
     }
@@ -867,15 +938,47 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     MFCarPlayLogBoth(@"ROOT search tap row=%ld track=%@", (long)indexPath.row, tid);
     [MFCarPlayBridge emitPlayTrack:tid sheetId:sid];
 
+    /* 11142658：同样用点中的数据 */
+    NSDictionary *picked = self.results[(NSUInteger)indexPath.row];
     MFCarPlayWindowNowPlayingVC *np = [[MFCarPlayWindowNowPlayingVC alloc] init];
     np.carPlayDelegate = self.carPlayDelegate;
-    np.nowPlaying = [self.carPlayDelegate nowPlayingForCarPlay];
+    np.nowPlaying = MFNowPlayingFromTrack(picked);
     [self.navigationController pushViewController:np animated:YES];
 }
 
 @end
 
 @implementation MFCarPlayWindowTracksVC
+
+/*
+ * 11142658：由曲目 dict 直接构造播放页数据（不读 MMKV）。
+ *
+ * 为什么需要：
+ *   点歌后 JS 处理有延迟，此时 MMKV 还没更新，
+ *   读 MMKV 会拿到上一首 -> 用户看到「点天后，播放页显示恋人」。
+ *
+ * 曲目 dict 来自 MFCarPlayNativeTracks，字段：
+ *   id / title / artist / album / artwork
+ * 时长和进度这里拿不到（MMKV 里的旧值不可信），置 0；
+ * JS 回传状态后会自动修正。
+ */
+- (NSDictionary *)optimisticNowPlayingFromTrack:(NSDictionary *)track {
+    if (![track isKindOfClass:[NSDictionary class]]) {
+        return nil;
+    }
+    return @{
+        @"id": track[@"id"] ?: @"",
+        @"title": track[@"title"] ?: @"",
+        @"artist": track[@"artist"] ?: @"",
+        @"album": track[@"album"] ?: @"",
+        @"artwork": track[@"artwork"] ?: @"",
+        @"platform": track[@"platform"] ?: @"",
+        @"duration": @(0),
+        @"progress": @(0),
+        @"queueCount": @(0),
+    };
+}
+
 
 - (void)viewDidLoad {
     MFAddBackButton(self);
@@ -899,7 +1002,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
     [NSLayoutConstraint activateConstraints:@[
         /* 顶部留 56 给返回按钮 + 居中标题 */
-        [self.table.topAnchor constraintEqualToAnchor:self.view.topAnchor constant:84],
+        [self.table.topAnchor constraintEqualToAnchor:self.view.topAnchor constant:64],
         [self.table.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
         [self.table.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.table.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
@@ -957,9 +1060,24 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     [MFCarPlayBridge emitPlayTrack:tid sheetId:self.sheetId];
     MFCarPlayLogBoth(@"emitted CarPlayPlayTrack track=%@", tid);
 
-    /* 11142650：点击曲目后跳转到播放页 */
+    /*
+     * ============ 11142658：修复「选的歌和播放的不一致」============
+     *
+     * 原 bug（日志可证）：
+     *   19:25:21 点了「天后」
+     *   19:25:21 nowPlaying: 恋人 / 李荣浩   <- 还是上一首
+     *
+     * 原因：emitPlayTrack 之后立刻读 MMKV，但 JS 还没处理完事件，
+     *      MMKV 里存的是上一首 -> 播放页显示错歌。
+     *
+     * 修法：点歌这一刻我们手里就有这首歌的完整数据，
+     *      直接用它构造播放页，完全不读 MMKV。
+     *      JS 回传最新状态后（handleNowPlayingState）会再修正。
+     */
+    NSDictionary *picked = self.tracks[(NSUInteger)indexPath.row];
     MFCarPlayWindowNowPlayingVC *np = [[MFCarPlayWindowNowPlayingVC alloc] init];
-    np.nowPlaying = [self.carPlayDelegate nowPlayingForCarPlay];
+    np.carPlayDelegate = self.carPlayDelegate;
+    np.nowPlaying = [self optimisticNowPlayingFromTrack:picked];
     [self.navigationController pushViewController:np animated:YES];
 }
 
