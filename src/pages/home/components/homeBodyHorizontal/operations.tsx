@@ -19,25 +19,12 @@ export default function Operations() {
                 navigate(ROUTE_PATH.RECOMMEND_SHEETS);
             },
         },
-        {
-            iconName: "trophy",
-            title: t("home.topList"),
-            action() {
-                navigate(ROUTE_PATH.TOP_LIST);
-            },
-        },
+        /* 11142656：移除榜单、本地音乐（与 homeBody 版本保持一致） */
         {
             iconName: "clock-outline",
             title: t("home.playHistory"),
             action() {
                 navigate(ROUTE_PATH.HISTORY);
-            },
-        },
-        {
-            iconName: "folder-music-outline",
-            title: t("home.localMusic"),
-            action() {
-                navigate(ROUTE_PATH.LOCAL);
             },
         },
     ] as const;
@@ -69,7 +56,7 @@ const styles = StyleSheet.create({
         flexWrap: "wrap",
     },
     actionButtonStyle: {
-        width: rpx(157.5),
+        width: rpx(339),
         height: rpx(160),
         borderRadius: rpx(18),
     },

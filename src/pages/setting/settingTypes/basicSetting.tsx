@@ -788,10 +788,17 @@ function LyricSetting() {
 
     const { t } = useI18N();
 
+    /*
+     * 11142656：默认改为开启（用户要求）。
+     *
+     * 之前是 ?? false —— 未设置时显示为关，插件拿不到歌词就直接放弃。
+     * 改成 ?? true 与「使用移动网络播放」一致：
+     *   basic.useCelluarNetworkPlay 用的是 ?? true
+     */
     const autoSearchLyric = createSwitch(
         t("basicSettings.lyric.autoSearchLyric"),
         "lyric.autoSearchLyric",
-        enableAutoSearchLyric ?? false,
+        enableAutoSearchLyric ?? true,
     );
 
     return (

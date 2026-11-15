@@ -208,6 +208,21 @@ static void MFLoadCoverIntoCell(NSString *urlStr, UITableViewCell *cell) {
     });
 }
 
+/*
+ * 11142656：统一背景色（对齐用户图二的深灰，不是纯黑）。
+ *
+ * 纯黑 #000000 在车机屏上对比太硬、边缘看不出层次。
+ * 用 #1C1C1E —— iOS 深色模式下系统级的次级背景色。
+ */
+static UIColor *MFCarPlayBackgroundColor(void) {
+    return [UIColor colorWithRed:0.11 green:0.11 blue:0.12 alpha:1.0];   /* #1C1C1E */
+}
+
+/* 卡片/列表行稍亮一档，形成层次 */
+static UIColor *MFCarPlayCardColor(void) {
+    return [UIColor colorWithRed:0.17 green:0.17 blue:0.18 alpha:1.0];   /* #2C2C2E */
+}
+
 static UIColor *MFCarPlayAccentColor(void) {
     return [UIColor colorWithRed:0.29 green:0.62 blue:1.00 alpha:1.0];
 }
@@ -232,10 +247,18 @@ static void MFAddBackButton(UIViewController *vc) {
     b.translatesAutoresizingMaskIntoConstraints = NO;
     [b addTarget:vc action:@selector(onBack) forControlEvents:64];
     [vc.view addSubview:b];
+    /*
+     * 11142656：位置修正。
+     *
+     * 用户反馈「返回按钮位置不对」——原来 top=6 会顶到车机状态栏
+     * （时间/信号那一行），视觉上像被切掉一半。
+     *
+     * 下移到 34，正好在状态栏下方、内容区上方。
+     */
     [NSLayoutConstraint activateConstraints:@[
-        [b.topAnchor constraintEqualToAnchor:vc.view.topAnchor constant:6],
-        [b.leadingAnchor constraintEqualToAnchor:vc.view.leadingAnchor constant:12],
-        [b.widthAnchor constraintEqualToConstant:110],
+        [b.topAnchor constraintEqualToAnchor:vc.view.topAnchor constant:34],
+        [b.leadingAnchor constraintEqualToAnchor:vc.view.leadingAnchor constant:16],
+        [b.widthAnchor constraintEqualToConstant:120],
         [b.heightAnchor constraintEqualToConstant:44],
     ]];
 
@@ -258,9 +281,9 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     l.translatesAutoresizingMaskIntoConstraints = NO;
     [vc.view addSubview:l];
     [NSLayoutConstraint activateConstraints:@[
-        [l.topAnchor constraintEqualToAnchor:vc.view.topAnchor constant:6],
+        [l.topAnchor constraintEqualToAnchor:vc.view.topAnchor constant:34],
         [l.centerXAnchor constraintEqualToAnchor:vc.view.centerXAnchor],
-        [l.leadingAnchor constraintGreaterThanOrEqualToAnchor:vc.view.leadingAnchor constant:130],
+        [l.leadingAnchor constraintGreaterThanOrEqualToAnchor:vc.view.leadingAnchor constant:150],
         [l.trailingAnchor constraintLessThanOrEqualToAnchor:vc.view.trailingAnchor constant:-20],
         [l.heightAnchor constraintEqualToConstant:44],
     ]];
@@ -309,7 +332,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     if (!self) {
         return nil;
     }
-    self.backgroundColor = [UIColor blackColor];
+    self.backgroundColor = MFCarPlayBackgroundColor();
     self.selectionStyle = 0;
 
     /* 封面：40x40，圆角 5 */
@@ -463,12 +486,12 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 - (void)viewDidLoad {
     [super viewDidLoad];
 
-    self.view.backgroundColor = [UIColor blackColor];
+    self.view.backgroundColor = MFCarPlayBackgroundColor();
     self.selectedTab = 0;
 
     /* ---- 顶部横向 tab ---- */
     self.tabBar = [[UIView alloc] init];
-    self.tabBar.backgroundColor = [UIColor blackColor];
+    self.tabBar.backgroundColor = MFCarPlayBackgroundColor();
     self.tabBar.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.tabBar];
 
@@ -492,7 +515,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     self.table.dataSource = self;
     self.table.delegate = self;
     self.table.rowHeight = 68.0;
-    self.table.backgroundColor = [UIColor blackColor];
+    self.table.backgroundColor = MFCarPlayBackgroundColor();
     self.table.separatorColor = [UIColor whiteColor];
     self.table.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.table];
@@ -512,7 +535,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     self.searchField = [[UITextField alloc] init];
     self.searchField.placeholder = @"输入歌名或歌手";
     self.searchField.textColor = [UIColor whiteColor];
-    self.searchField.backgroundColor = [UIColor blackColor];
+    self.searchField.backgroundColor = MFCarPlayCardColor();
     self.searchField.layer.borderColor = [UIColor whiteColor].CGColor;
     self.searchField.layer.borderWidth = 1.0;
     self.searchField.layer.cornerRadius = 8.0;
@@ -855,21 +878,21 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     [super viewDidLoad];
 
     self.title = self.sheetTitle ?: @"曲目";
-    self.view.backgroundColor = [UIColor blackColor];
+    self.view.backgroundColor = MFCarPlayBackgroundColor();
 
     self.table = [[UITableView alloc] initWithFrame:self.view.bounds
                                               style:UITableViewStylePlain];
     self.table.dataSource = self;
     self.table.delegate = self;
     self.table.rowHeight = 60.0;
-    self.table.backgroundColor = [UIColor blackColor];
+    self.table.backgroundColor = MFCarPlayBackgroundColor();
     self.table.separatorColor = [UIColor whiteColor];
     self.table.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.table];
 
     [NSLayoutConstraint activateConstraints:@[
         /* 顶部留 56 给返回按钮 + 居中标题 */
-        [self.table.topAnchor constraintEqualToAnchor:self.view.topAnchor constant:56],
+        [self.table.topAnchor constraintEqualToAnchor:self.view.topAnchor constant:84],
         [self.table.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
         [self.table.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.table.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
@@ -2839,7 +2862,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     [super viewDidLoad];
 
     self.title = @"";
-    self.view.backgroundColor = [UIColor blackColor];
+    self.view.backgroundColor = MFCarPlayBackgroundColor();
 
     /*
      * 11142653：封面作背景。
@@ -2915,7 +2938,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
     /* 封面 */
     self.coverView = [[UIImageView alloc] init];
-    self.coverView.backgroundColor = [UIColor blackColor];
+    self.coverView.backgroundColor = MFCarPlayCardColor();
     self.coverView.contentMode = UIViewContentModeScaleAspectFill;
     self.coverView.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.coverView];
@@ -2937,7 +2960,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
                         s.coverView.image = img;
                         /* 11142653：同一张图铺满背景 */
                         s.backgroundImageView.image = img;
-                        s.view.backgroundColor = [UIColor blackColor];
+                        /* 封面已铺满背景，不动 view 底色 */
                         MFCarPlayLogBoth(@"NOWPLAYING cover loaded %lu bytes",
                               (unsigned long)data.length);
                     }
@@ -3057,7 +3080,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     [b setTitle:text forState:0];
     [b setTitleColor:[UIColor whiteColor] forState:0];
     b.titleLabel.font = [UIFont systemFontOfSize:26.0];
-    b.backgroundColor = [UIColor blackColor];
+    b.backgroundColor = MFCarPlayCardColor();
     b.translatesAutoresizingMaskIntoConstraints = NO;
     [b addTarget:self action:action forControlEvents:64];  /* touchUpInside */
     [self.view addSubview:b];

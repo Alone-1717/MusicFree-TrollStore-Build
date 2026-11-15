@@ -8,7 +8,6 @@ import { showPanel } from "@/components/panels/usePanel";
 import { useI18N } from "@/core/i18n";
 import { ROUTE_PATH, useNavigate } from "@/core/router";
 import TrackPlayer from "@/core/trackPlayer";
-import { checkUpdateAndShowResult } from "@/hooks/useCheckUpdate.ts";
 import NativeUtils from "@/native/utils";
 import rpx from "@/utils/rpx";
 import { useScheduleCloseCountDown } from "@/utils/scheduleClose";
@@ -16,7 +15,7 @@ import timeformat from "@/utils/timeformat";
 import { DrawerContentScrollView } from "@react-navigation/drawer";
 import React, { memo } from "react";
 import { BackHandler, Platform, StyleSheet, View } from "react-native";
-import { default as DeviceInfo, default as deviceInfoModule } from "react-native-device-info";
+import DeviceInfo from "react-native-device-info";
 
 const ITEM_HEIGHT = rpx(108);
 
@@ -152,47 +151,14 @@ function HomeDrawer(props: any) {
                     </ListItem>
                 </View>
 
-                <View style={style.card}>
-                    <ListItem withHorizontalPadding heightType="smallest">
-                        <ListItem.ListItemText
-                            fontSize="subTitle"
-                            fontWeight="bold">
-                            {t("common.software")}
-                        </ListItem.ListItemText>
-                    </ListItem>
+                {/*
+                    11142656：移除「软件」整张卡片。
+                    包含「检查更新」和「关于 MusicFree」两项，用户要求移除。
+                    两项都去掉后卡片只剩标题，所以整张卡片一起删。
 
-                    <ListItem
-                        withHorizontalPadding
-                        key={"update"}
-                        onPress={() => {
-                            checkUpdateAndShowResult(true);
-                        }}>
-                        <ListItem.ListItemIcon
-                            icon={"arrow-path"}
-                            width={rpx(48)}
-                        />
-                        <ListItem.Content title={t("sidebar.checkUpdate")} />
-                        <ListItem.ListItemText
-                            position="right"
-                            fontSize="subTitle">
-                            {`${t("sidebar.currentVersion")}${deviceInfoModule.getVersion()}`}
-                        </ListItem.ListItemText>
-                    </ListItem>
-                    <ListItem
-                        withHorizontalPadding
-                        key={"about"}
-                        onPress={() => {
-                            navigateToSetting("about");
-                        }}>
-                        <ListItem.ListItemIcon
-                            icon={"information-circle"}
-                            width={rpx(48)}
-                        />
-                        <ListItem.Content
-                            title={`${t("common.about")} ${deviceInfoModule.getApplicationName()}`}
-                        />
-                    </ListItem>
-                </View>
+                    保留：基本设置 / 插件管理 / 主题设置 / 定时关闭 /
+                          备份与恢复 / 语言设置
+                */}
 
                 <Divider />
                 {/* iOS 没有"返回桌面"和"主动退出应用"的公开 API，

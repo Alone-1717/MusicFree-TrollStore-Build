@@ -248,10 +248,28 @@ NSArray<NSDictionary *> *MFCarPlayNativeTracks(NSString *sheetId) {
             }
             artist = [names componentsJoinedByString:@"/"];
         }
+        /*
+         * 11142656：补 artwork / album。
+         * 用户反馈「曲目页的图片没加载出来」——根因就是这里只给了
+         * id/title/artist，没有 artwork，cell 拿不到封面地址。
+         */
+        NSString *artwork = @"";
+        id rawArt = d[@"artwork"];
+        if ([rawArt isKindOfClass:[NSString class]]) {
+            artwork = (NSString *)rawArt;
+        }
+        NSString *album = @"";
+        id rawAlbum = d[@"album"];
+        if ([rawAlbum isKindOfClass:[NSString class]]) {
+            album = (NSString *)rawAlbum;
+        }
+
         [out addObject:@{
             @"id": tid,
             @"title": title,
             @"artist": artist,
+            @"artwork": artwork ?: @"",
+            @"album": album ?: @"",
         }];
     }
     MFDiag(@"tracks sheet=%@ total = %lu", sheetId, (unsigned long)out.count);

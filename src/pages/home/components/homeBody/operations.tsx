@@ -9,6 +9,17 @@ export default function Operations() {
     const navigate = useNavigate();
     const { t } = useI18N();
 
+    /*
+     * 11142656：移除「榜单」和「本地音乐」两个入口。
+     *
+     * 保留：
+     *   推荐歌单 -> RECOMMEND_SHEETS
+     *   播放历史 -> HISTORY
+     *
+     * 移除原因：用户要求精简首页。
+     * 注意：路由与页面代码保留（ROUTE_PATH.TOP_LIST / LOCAL 仍存在），
+     *      只是首页不再有入口，后续需要可随时加回。
+     */
     const actionButtons = [
         {
             iconName: "fire",
@@ -18,24 +29,10 @@ export default function Operations() {
             },
         },
         {
-            iconName: "trophy",
-            title: t("home.topList"),
-            action() {
-                navigate(ROUTE_PATH.TOP_LIST);
-            },
-        },
-        {
             iconName: "clock-outline",
             title: t("home.playHistory"),
             action() {
                 navigate(ROUTE_PATH.HISTORY);
-            },
-        },
-        {
-            iconName: "folder-music-outline",
-            title: t("home.localMusic"),
-            action() {
-                navigate(ROUTE_PATH.LOCAL);
             },
         },
     ] as const;
@@ -62,10 +59,11 @@ const styles = StyleSheet.create({
         paddingHorizontal: rpx(24),
         marginVertical: rpx(32),
         flexDirection: "row",
-        flexWrap: "nowrap",
+        flexWrap: "wrap",
     },
+    /* 11142656：只剩两个按钮，宽度改成等分（750 - 48 padding - 24 gap）/ 2 */
     actionButtonStyle: {
-        width: rpx(157.5),
+        width: rpx(339),
         height: rpx(160),
         borderRadius: rpx(18),
     },
