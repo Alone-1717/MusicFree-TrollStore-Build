@@ -172,15 +172,51 @@ static id<NSObject> sDataObserverToken = nil;
 #pragma mark - CPTemplateApplicationSceneDelegate
 
 /*
- * 只保留不带 window 的签名 —— 11142615 日志已证明这条路径能进来
- * （`[MusicFree][CarPlay] connected (phase1)` 打印了）。
- * 框架那句 `App supports CPTemplateApplicationScene method without window`
- * 是 Notice 级的信息提示（说明走模板渲染），不是错误，不必改签名。
- * 本次唯一的实质修复是：**本回调内不再做任何同步 XPC 读**。
+ * 必须同时实现两个签名：
+ *
+ *   didConnectInterfaceController:toWindow:   ← iOS 14+ 正式签名（带 CPWindow）
+ *   didConnectInterfaceController:            ← 旧签名 / 兜底
+ *
+ * 11142621 日志证明系统走的是不带 window 的那条（框架 Notice:
+ * "App supports CPTemplateApplicationScene method without window"），
+ * 于是我们从来没拿到过 CPWindow —— 模板提交了却没有渲染宿主，
+ * 表现就是车机黑屏 + 音频正常。
+ *
+ * 现在优先实现带 window 的版本：拿到 CPWindow 并强引用它，
+ * 再把 window 关联到场景，模板才有地方画。
  */
 - (void)templateApplicationScene:(CPTemplateApplicationScene *)templateApplicationScene
     didConnectInterfaceController:(CPInterfaceController *)interfaceController
+                        toWindow:(CPWindow *)window API_AVAILABLE(ios(14.0))
 {
+    MFCarPlayLogBoth(@"didConnect WITH CPWindow=%p ctrl=%p",
+          (__bridge void *)window, (__bridge void *)interfaceController);
+
+    /* 强引用 window，否则它会在 runloop 结束后被释放，模板失去宿主 */
+    self.carWindow = window;
+    if (window) {
+        /* CPWindow 是 UIWindow 子类，关联到传入的模板场景 */
+        if (@available(iOS 13.0, *)) {
+            @try {
+                [window setWindowScene:(UIWindowScene *)templateApplicationScene];
+            } @catch (NSException *e) {
+                MFCarPlayLogBoth(@"setWindowScene threw: %@", e.reason);
+            }
+        }
+        [window makeKeyAndVisible];
+        MFCarPlayLogBoth(@"carWindow attached & key, frame=%@",
+              NSStringFromCGRect(window.frame));
+    } else {
+        MFCarPlayLogBoth(@"WARN: CPWindow is nil in toWindow variant");
+    }
+
+    [self attachInterfaceController:interfaceController scene:templateApplicationScene];
+}
+
+- (void)templateApplicationScene:(CPTemplateApplicationScene *)templateApplicationScene
+    didConnectInterfaceController:(CPInterfaceController *)interfaceController
+{
+    MFCarPlayLogBoth(@"didConnect WITHOUT CPWindow (legacy path)");
     [self attachInterfaceController:interfaceController scene:templateApplicationScene];
 }
 
@@ -565,17 +601,31 @@ static id<NSObject> sDataObserverToken = nil;
     _rootInstallInFlight = YES;
     _rearmPending = NO;
 
-    /* 每次（含 rearm）都用全新模板对象，绝不复用可能已绑定失效连接的旧实例 */
+    /*
+     * ============ 关键修复：首屏就用真实数据构建模板 ============
+     *
+     * 11142621 日志的死锁链：
+     *   setRootTemplate 发出 -> completion 从不回调 -> _rootApplied 永远 0
+     *   -> refreshRootSections 的闸门挡住 -> currentRootSections 从不执行
+     *   -> MFCarPlayNativeSheets() 一次都没被调用
+     *   -> 车机永远是"正在加载歌单…"占位，看起来像黑屏
+     *
+     * 修法：**创建模板时就把原生歌单塞进 sections**，不等 completion。
+     * 原生数据源 (MMKV) 是同步读的，在 didConnect 里调用完全安全
+     * （不碰 CarPlay 的任何同步属性，只读本地文件）。
+     */
+    NSArray<CPListSection *> *bootSections = [self currentRootSections];
     CPListTemplate *list = [[CPListTemplate alloc] initWithTitle:@"音乐"
-                                                        sections:[self placeholderSections]];
+                                                        sections:bootSections];
     _rootList = list;
 
     if (allowRearm) {
-        MFCarPlayLogBoth(@"rearm #%lu controller=%p (fresh template=%p)",
-              (unsigned long)_rearmCount, (__bridge void *)ic, (__bridge void *)list);
+        MFCarPlayLogBoth(@"rearm #%lu controller=%p (fresh template=%p, sections=%lu)",
+              (unsigned long)_rearmCount, (__bridge void *)ic, (__bridge void *)list,
+              (unsigned long)bootSections.count);
     } else {
-        MFCarPlayLogBoth(@"one-shot root install armed controller=%p",
-              (__bridge void *)ic);
+        MFCarPlayLogBoth(@"one-shot root install armed controller=%p (sections=%lu)",
+              (__bridge void *)ic, (unsigned long)bootSections.count);
     }
 
     [self dispatchRootTemplate:list];
@@ -885,26 +935,29 @@ static id<NSObject> sDataObserverToken = nil;
         return;
     }
     /*
-     * 推送闸门（避开 11142515 / 本轮两次自锁）：
-     *   - _rootApplied == YES（completion 明确成功 或 框架已确认）
-     *     -> **立刻推**，不再拿 topTemplate 复审。
-     *     否则会出现"completion 成功但 topTemplate 读抖动"导致的永久空屏。
-     *   - _rootApplied == NO -> 只能靠框架真相兜底，此时必须先过 _templateReady，
-     *     由 syncAppliedStateFromFramework 完成 topTemplate 读。
+     * 推送闸门（11142622 修正）：
+     *
+     * 11142621 日志证明 completion 可能永远不回调，导致 _rootApplied 恒为 0，
+     * 于是这里永远 return，currentRootSections 从不执行 —— 原生数据一次都没读过。
+     *
+     * 现在的判据：
+     *   - 有 _rootList 就值得尝试 updateSections（updateSections 本身是安全调用，
+     *     模板没上屏也只是无效，不会打断连接）。
+     *   - 若 _rootApplied == NO，额外用 topTemplate 核对一次，能确认就置位；
+     *     核对不上**也照样推**，因为模板内容正确比状态标记更重要。
+     *     这正是黑屏要解决的核心：让车机看到内容。
      */
     if (!_rootApplied) {
-        if (!_templateReady) {
-            /* 握手未结算：绝不做同步读，watchdog 解锁后会再调一次 */
-            return;
-        }
-        if (![self syncAppliedStateFromFramework]) {
-            return;
+        if (_templateReady && [self syncAppliedStateFromFramework]) {
+            MFCarPlayLogBoth(@"refreshRootSections: framework confirmed, applied=1");
+        } else {
+            MFCarPlayLogBoth(@"refreshRootSections: applied=0 but pushing anyway (content over state)");
         }
     }
     NSArray<CPListSection *> *sections = [self currentRootSections];
     [_rootList updateSections:sections];
-    MFCarPlayLogBoth(@"updateSections root sections=%lu sheetsReceived=%d",
-          (unsigned long)sections.count, _sheetsReceived);
+    MFCarPlayLogBoth(@"updateSections root sections=%lu sheetsReceived=%d applied=%d",
+          (unsigned long)sections.count, _sheetsReceived, _rootApplied);
 }
 
 #pragma mark - 歌单子页
