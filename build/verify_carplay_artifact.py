@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142653"
+EXPECTED_VERSION = "11142654"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -109,6 +109,7 @@ BINARY_MARKERS = [
     b"ROOT sheets tap row=%ld sheet=%@",
     b"ROOT history tap row=%ld track=%@",
     b"ROOT search tap row=%ld track=%@",
+    b"ROOT search tab: becomeFirstResponder called",
 ]
 
 # 旧版已证伪/致命的标记，产物里绝不能再出现

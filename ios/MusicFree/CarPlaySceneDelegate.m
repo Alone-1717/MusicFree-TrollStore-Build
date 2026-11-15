@@ -212,20 +212,59 @@ static UIColor *MFCarPlayAccentColor(void) {
     return [UIColor colorWithRed:0.29 green:0.62 blue:1.00 alpha:1.0];
 }
 
+/*
+ * 11142654：返回按钮重做。
+ *
+ * 上一版问题（用户反馈图二）：
+ *   按钮加在 vc.view 上，但 UITableView 铺满整个 view 且后添加，
+ *   把按钮盖住了 —— 所以「左上角依旧没有返回按钮」。
+ *
+ * 修法：
+ *   1) 加完后 bringSubviewToFront: 强制置顶
+ *   2) 改成浅蓝 + 「← 返回」文字（对齐用户图五）
+ *   3) 尺寸放大到 100x44，车机触摸友好
+ */
 static void MFAddBackButton(UIViewController *vc) {
     UIButton *b = [UIButton buttonWithType:0];
-    [b setTitle:@"\u2190" forState:0];
-    [b setTitleColor:[UIColor whiteColor] forState:0];
-    b.titleLabel.font = [UIFont systemFontOfSize:30.0];
+    [b setTitle:@"\u2190 \u8fd4\u56de" forState:0];   /* ← 返回 */
+    [b setTitleColor:MFCarPlayAccentColor() forState:0];
+    b.titleLabel.font = [UIFont systemFontOfSize:19.0];
     b.translatesAutoresizingMaskIntoConstraints = NO;
     [b addTarget:vc action:@selector(onBack) forControlEvents:64];
     [vc.view addSubview:b];
     [NSLayoutConstraint activateConstraints:@[
-        [b.topAnchor constraintEqualToAnchor:vc.view.topAnchor constant:10],
-        [b.leadingAnchor constraintEqualToAnchor:vc.view.leadingAnchor constant:14],
-        [b.widthAnchor constraintEqualToConstant:64],
-        [b.heightAnchor constraintEqualToConstant:48],
+        [b.topAnchor constraintEqualToAnchor:vc.view.topAnchor constant:6],
+        [b.leadingAnchor constraintEqualToAnchor:vc.view.leadingAnchor constant:12],
+        [b.widthAnchor constraintEqualToConstant:110],
+        [b.heightAnchor constraintEqualToConstant:44],
     ]];
+
+    /* 关键：表格是后加的，必须把按钮提上来 */
+    [vc.view bringSubviewToFront:b];
+}
+
+/*
+ * 11142654：顶部居中标题（对齐图五「经典老歌 | 90后必听的怀旧金曲」）。
+ */
+static void MFAddTopTitle(UIViewController *vc, NSString *title) {
+    if (title.length == 0) {
+        return;
+    }
+    UILabel *l = [[UILabel alloc] init];
+    l.text = title;
+    l.font = [UIFont systemFontOfSize:19.0];
+    l.textColor = [UIColor whiteColor];
+    l.textAlignment = NSTextAlignmentCenter;
+    l.translatesAutoresizingMaskIntoConstraints = NO;
+    [vc.view addSubview:l];
+    [NSLayoutConstraint activateConstraints:@[
+        [l.topAnchor constraintEqualToAnchor:vc.view.topAnchor constant:6],
+        [l.centerXAnchor constraintEqualToAnchor:vc.view.centerXAnchor],
+        [l.leadingAnchor constraintGreaterThanOrEqualToAnchor:vc.view.leadingAnchor constant:130],
+        [l.trailingAnchor constraintLessThanOrEqualToAnchor:vc.view.trailingAnchor constant:-20],
+        [l.heightAnchor constraintEqualToConstant:44],
+    ]];
+    [vc.view bringSubviewToFront:l];
 }
 
 
@@ -239,6 +278,116 @@ static void MFAddBackButton(UIViewController *vc) {
  *   MFCarPlayWindowRootVC     歌单列表 -> 点击进入曲目列表
  *   MFCarPlayWindowTracksVC   曲目列表 -> 点击播放
  */
+
+/*
+ * ============ 11142654：统一列表 Cell ============
+ *
+ * 为什么不用系统 cell.imageView：
+ *   系统 imageView 的尺寸由 UITableViewCell 内部控制（约 40x40 随行高变），
+ *   无法设圆角、无法精确控制边距。用户反馈「封面过大」「没有圆角」
+ *   就是这个原因。
+ *
+ * 本类完全自绘：
+ *   ┌────────────────────────────────────┐
+ *   │ ┌────┐  主标题                    │  封面 40x40 圆角 5
+ *   │ │    │  副标题（歌手 · 专辑）      │  主标题 19px 白
+ *   │ └────┘                             │  副标题 15px 灰
+ *   └────────────────────────────────────┘
+ */
+@interface MFCarPlayListCell : UITableViewCell
+@property (nonatomic, strong) UIImageView *coverView;
+@property (nonatomic, strong) UILabel *mainLabel;
+@property (nonatomic, strong) UILabel *subLabel;
+@property (nonatomic, copy) NSString *coverToken;   /* 防止复用错图 */
+@end
+
+@implementation MFCarPlayListCell
+
+- (instancetype)initWithStyle:(UITableViewCellStyle)style
+              reuseIdentifier:(NSString *)reuseIdentifier {
+    self = [super initWithStyle:style reuseIdentifier:reuseIdentifier];
+    if (!self) {
+        return nil;
+    }
+    self.backgroundColor = [UIColor blackColor];
+    self.selectionStyle = 0;
+
+    /* 封面：40x40，圆角 5 */
+    self.coverView = [[UIImageView alloc] init];
+    self.coverView.contentMode = UIViewContentModeScaleAspectFill;
+    self.coverView.backgroundColor = [UIColor colorWithRed:0.15 green:0.15 blue:0.16 alpha:1.0];
+    self.coverView.layer.cornerRadius = 5.0;
+    self.coverView.layer.masksToBounds = YES;
+    self.coverView.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.contentView addSubview:self.coverView];
+
+    /* 主标题 */
+    self.mainLabel = [[UILabel alloc] init];
+    self.mainLabel.font = [UIFont systemFontOfSize:19.0];
+    self.mainLabel.textColor = [UIColor whiteColor];
+    self.mainLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.contentView addSubview:self.mainLabel];
+
+    /* 副标题 */
+    self.subLabel = [[UILabel alloc] init];
+    self.subLabel.font = [UIFont systemFontOfSize:15.0];
+    self.subLabel.textColor = [UIColor colorWithRed:0.72 green:0.72 blue:0.74 alpha:1.0];
+    self.subLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.contentView addSubview:self.subLabel];
+
+    /* 布局 */
+    [NSLayoutConstraint activateConstraints:@[
+        /* 封面：左边距 12，垂直居中，40x40 */
+        [self.coverView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:12],
+        [self.coverView.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
+        [self.coverView.widthAnchor constraintEqualToConstant:40],
+        [self.coverView.heightAnchor constraintEqualToConstant:40],
+
+        /* 主标题：封面右侧 12，顶部对齐封面 */
+        [self.mainLabel.leadingAnchor constraintEqualToAnchor:self.coverView.trailingAnchor constant:12],
+        [self.mainLabel.topAnchor constraintEqualToAnchor:self.coverView.topAnchor constant:-1],
+        [self.mainLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.contentView.trailingAnchor constant:-40],
+
+        /* 副标题：封面右侧 12，底部对齐封面 */
+        [self.subLabel.leadingAnchor constraintEqualToAnchor:self.mainLabel.leadingAnchor],
+        [self.subLabel.bottomAnchor constraintEqualToAnchor:self.coverView.bottomAnchor constant:1],
+        [self.subLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.contentView.trailingAnchor constant:-40],
+    ]];
+
+    return self;
+}
+
+- (void)configureWithTitle:(NSString *)title
+                  subtitle:(NSString *)subtitle
+                     cover:(NSString *)coverURL {
+    self.mainLabel.text = title ?: @"";
+    self.subLabel.text = subtitle ?: @"";
+    self.coverToken = coverURL ?: @"";
+    self.coverView.image = nil;    /* 先清空，避免复用到上一张图 */
+
+    if (coverURL.length == 0) {
+        return;
+    }
+
+    NSString *token = [coverURL copy];
+    __weak __typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(0, 0), ^{
+        NSData *data = [NSData dataWithContentsOfURL:[NSURL URLWithString:token]];
+        UIImage *img = data ? [UIImage imageWithData:data] : nil;
+        if (!img) {
+            return;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong __typeof(weakSelf) s = weakSelf;
+            /* 复用保护：token 一致才设置 */
+            if (s && [s.coverToken isEqualToString:token]) {
+                s.coverView.image = img;
+            }
+        });
+    });
+}
+
+@end
 
 @interface MFCarPlayWindowRootVC : UIViewController <UITableViewDataSource, UITableViewDelegate, UITextFieldDelegate>
 @property (nonatomic, weak) MFCarPlaySceneDelegate *carPlayDelegate;
@@ -399,14 +548,29 @@ static void MFAddBackButton(UIViewController *vc) {
         [cons addObject:[prev.trailingAnchor constraintEqualToAnchor:self.tabBar.trailingAnchor]];
     }
 
-    /* 搜索框（在 tabBar 下方固定高度，始终占位） */
-    [cons addObject:[self.searchField.topAnchor constraintEqualToAnchor:self.tabBar.bottomAnchor constant:8]];
-    [cons addObject:[self.searchField.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:16]];
-    [cons addObject:[self.searchField.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-16]];
-    [cons addObject:[self.searchField.heightAnchor constraintEqualToConstant:44]];
+    /*
+     * 11142654：搜索框布局修复。
+     *
+     * 用户反馈（图三）：搜索框超出屏幕右侧、点不到、唤不起键盘。
+     *
+     * 根因推测：
+     *   之前 searchField 的 trailing 约束挂在 v.trailingAnchor 上，
+     *   但 UITextField 自身有默认内边距，加上车机屏幕宽 1066 且字体放大，
+     *   实际渲染超出可视区。
+     *
+     * 修法：
+     *   1) 搜索框左边距 60（给返回图标位）、右边距 100（给「取消」位，对齐图一）
+     *   2) 高度 48，垂直居中于顶部区域
+     *   3) 表格始终从 tabBar 下方开始，搜索框浮在表格之上
+     *      （这样切换 tab 不改变表格位置，避免布局抖动）
+     */
+    [cons addObject:[self.searchField.topAnchor constraintEqualToAnchor:self.tabBar.bottomAnchor constant:6]];
+    [cons addObject:[self.searchField.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:60]];
+    [cons addObject:[self.searchField.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-100]];
+    [cons addObject:[self.searchField.heightAnchor constraintEqualToConstant:48]];
 
-    /* 表格在搜索框下方（始终，搜索框透明时视觉上等于贴顶） */
-    [cons addObject:[self.table.topAnchor constraintEqualToAnchor:self.searchField.bottomAnchor constant:8]];
+    /* 表格始终从 tabBar 下方开始（搜索框浮在其上，不挤占布局） */
+    [cons addObject:[self.table.topAnchor constraintEqualToAnchor:self.tabBar.bottomAnchor constant:8]];
     [cons addObject:[self.table.bottomAnchor constraintEqualToAnchor:v.bottomAnchor]];
     [cons addObject:[self.table.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:16]];
     [cons addObject:[self.table.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-16]];
@@ -469,10 +633,24 @@ static void MFAddBackButton(UIViewController *vc) {
     self.selectedTab = tag;
     [self refreshTabAppearance];
 
-    /* 搜索框只在 tab=1 显示（用 alpha 避免布局塌陷） */
+    /*
+     * 搜索框只在 tab=1 显示（用 alpha 避免布局塌陷）。
+     * 11142654：切到搜索 tab 自动唤起键盘（用户选定方案 A）。
+     */
     BOOL showSearch = (tag == 1);
     self.searchField.alpha = showSearch ? 1.0 : 0.0;
     self.searchField.userInteractionEnabled = showSearch;
+
+    if (showSearch) {
+        [self.view bringSubviewToFront:self.searchField];
+        /* 延迟一点，等 tab 切换的布局完成再唤起键盘 */
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self.searchField becomeFirstResponder];
+            MFCarPlayLogBoth(@"ROOT search tab: becomeFirstResponder called");
+        });
+    } else {
+        [self.searchField resignFirstResponder];
+    }
 
     /* 切 tab 时重载数据 */
     if (tag == 0) {
@@ -508,82 +686,49 @@ static void MFAddBackButton(UIViewController *vc) {
          cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     NSArray<NSDictionary *> *data = (self.selectedTab == 1) ? self.results : self.sheets;
     if (indexPath.row >= (NSInteger)data.count) {
-        return [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
-                                      reuseIdentifier:nil];
+        return [[MFCarPlayListCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                       reuseIdentifier:nil];
     }
     NSDictionary *item = data[(NSUInteger)indexPath.row];
 
-    static NSString *cid = @"cell";
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cid];
+    static NSString *cid = @"mfcell";
+    MFCarPlayListCell *cell = (MFCarPlayListCell *)[tableView dequeueReusableCellWithIdentifier:cid];
     if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
-                                      reuseIdentifier:cid];
+        cell = [[MFCarPlayListCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                        reuseIdentifier:cid];
     }
 
-    cell.textLabel.text = [item[@"title"] isKindOfClass:[NSString class]]
-        ? item[@"title"] : @"";
-    cell.textLabel.textColor = [UIColor whiteColor];
-    cell.textLabel.font = [UIFont systemFontOfSize:19.0];
+    NSString *title = [item[@"title"] isKindOfClass:[NSString class]] ? item[@"title"] : @"";
+    NSString *sub = @"";
 
-    NSString *detail = @"";
     if (self.selectedTab == 0) {
+        /* 歌单：副标题 = 曲目数 */
         id cnt = item[@"count"];
-        detail = [cnt isKindOfClass:[NSNumber class]]
+        sub = [cnt isKindOfClass:[NSNumber class]]
             ? [NSString stringWithFormat:@"%@ 首", cnt] : @"";
-    } else if (self.selectedTab == 2) {
-        detail = [item[@"artist"] isKindOfClass:[NSString class]] ? item[@"artist"] : @"";
     } else {
-        detail = [item[@"artist"] isKindOfClass:[NSString class]] ? item[@"artist"] : @"";
+        /* 搜索/最近播放：副标题 = 歌手 · 专辑 */
+        NSString *ar = [item[@"artist"] isKindOfClass:[NSString class]] ? item[@"artist"] : @"";
+        NSString *al = [item[@"album"] isKindOfClass:[NSString class]] ? item[@"album"] : @"";
+        if (ar.length > 0 && al.length > 0) {
+            sub = [NSString stringWithFormat:@"%@ · %@", ar, al];
+        } else {
+            sub = ar.length > 0 ? ar : al;
+        }
     }
-    cell.detailTextLabel.text = detail;
-    cell.detailTextLabel.textColor = [UIColor whiteColor];
-    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
 
-    /*
-     * 11142653: cover thumbnail for all three tabs.
-     *   tab 0 (sheets)  -> coverImg (sheet cover, or first track artwork)
-     *   tab 1 (search)  -> artwork
-     *   tab 2 (history) -> artwork
-     */
+    /* 封面：歌单用 coverImg，其余用 artwork */
     NSString *cover = nil;
     if (self.selectedTab == 0) {
-        cover = [item[@"coverImg"] isKindOfClass:[NSString class]]
-            ? item[@"coverImg"] : nil;
+        cover = [item[@"coverImg"] isKindOfClass:[NSString class]] ? item[@"coverImg"] : nil;
     }
     if (cover.length == 0) {
-        cover = [item[@"artwork"] isKindOfClass:[NSString class]]
-            ? item[@"artwork"] : nil;
-    }
-    if (cover.length > 0) {
-        MFLoadCoverIntoCell(cover, cell);
+        cover = [item[@"artwork"] isKindOfClass:[NSString class]] ? item[@"artwork"] : nil;
     }
 
+    [cell configureWithTitle:title subtitle:sub cover:cover];
     return cell;
 }
-
-/* 简单封面加载（无缓存，够用即可） */
-- (void)loadCover:(NSString *)urlStr forCell:(UITableViewCell *)cell {
-    NSURL *url = [NSURL URLWithString:urlStr];
-    if (!url) {
-        return;
-    }
-    __weak UITableViewCell *weakCell = cell;
-    dispatch_async(dispatch_get_global_queue(0, 0), ^{
-        NSData *data = [NSData dataWithContentsOfURL:url];
-        UIImage *img = data ? [UIImage imageWithData:data] : nil;
-        if (!img) {
-            return;
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            __strong UITableViewCell *c = weakCell;
-            if (c) {
-                c.imageView.image = img;
-            }
-        });
-    });
-}
-
-#pragma mark UITableViewDelegate
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
@@ -646,6 +791,8 @@ static void MFAddBackButton(UIViewController *vc) {
 
 - (void)viewDidLoad {
     MFAddBackButton(self);
+    /* 11142654：顶部居中标题（歌单名），对齐用户图五 */
+    MFAddTopTitle(self, self.sheetTitle);
     MFAddBackButton(self);
     [super viewDidLoad];
 
@@ -663,7 +810,8 @@ static void MFAddBackButton(UIViewController *vc) {
     [self.view addSubview:self.table];
 
     [NSLayoutConstraint activateConstraints:@[
-        [self.table.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        /* 顶部留 56 给返回按钮 + 居中标题 */
+        [self.table.topAnchor constraintEqualToAnchor:self.view.topAnchor constant:56],
         [self.table.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
         [self.table.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.table.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
@@ -681,33 +829,28 @@ static void MFAddBackButton(UIViewController *vc) {
 
 - (UITableViewCell *)tableView:(UITableView *)tableView
          cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    static NSString *cid = @"track";
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cid];
+    static NSString *cid = @"mftrack";
+    MFCarPlayListCell *cell = (MFCarPlayListCell *)[tableView dequeueReusableCellWithIdentifier:cid];
     if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
-                                      reuseIdentifier:cid];
+        cell = [[MFCarPlayListCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                        reuseIdentifier:cid];
     }
     if (indexPath.row < (NSInteger)self.tracks.count) {
         NSDictionary *tr = self.tracks[(NSUInteger)indexPath.row];
-        NSString *tt = [tr[@"title"] isKindOfClass:[NSString class]]
-            ? tr[@"title"] : @"未知曲目";
-        NSString *ar = [tr[@"artist"] isKindOfClass:[NSString class]]
-            ? tr[@"artist"] : @"";
-        cell.textLabel.text = tt;
-        cell.textLabel.textColor = [UIColor whiteColor];
-        cell.textLabel.font = [UIFont systemFontOfSize:19.0];
-        cell.detailTextLabel.text = ar;
-        cell.detailTextLabel.textColor = [UIColor whiteColor];
-
-        /* 11142653: 每首曲目前面显示封面（用户图七样式） */
-        NSString *cover = [tr[@"artwork"] isKindOfClass:[NSString class]]
-            ? tr[@"artwork"] : nil;
-        MFLoadCoverIntoCell(cover, cell);
+        NSString *tt = [tr[@"title"] isKindOfClass:[NSString class]] ? tr[@"title"] : @"";
+        NSString *ar = [tr[@"artist"] isKindOfClass:[NSString class]] ? tr[@"artist"] : @"";
+        NSString *al = [tr[@"album"] isKindOfClass:[NSString class]] ? tr[@"album"] : @"";
+        NSString *sub = @"";
+        if (ar.length > 0 && al.length > 0) {
+            sub = [NSString stringWithFormat:@"%@ · %@", ar, al];
+        } else {
+            sub = ar.length > 0 ? ar : al;
+        }
+        NSString *cover = [tr[@"artwork"] isKindOfClass:[NSString class]] ? tr[@"artwork"] : nil;
+        [cell configureWithTitle:tt subtitle:sub cover:cover];
     }
     return cell;
 }
-
-#pragma mark UITableViewDelegate
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
@@ -2734,7 +2877,7 @@ static void MFAddBackButton(UIViewController *vc) {
     UIView *v = self.view;
     [NSLayoutConstraint activateConstraints:@[
         /* 歌名 */
-        [self.titleLabel.topAnchor constraintEqualToAnchor:v.topAnchor constant:24],
+        [self.titleLabel.topAnchor constraintEqualToAnchor:v.topAnchor constant:58],
         [self.titleLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:24],
         [self.titleLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-24],
 
