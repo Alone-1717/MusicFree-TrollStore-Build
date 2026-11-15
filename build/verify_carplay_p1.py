@@ -366,6 +366,21 @@ chk("CI 推送列表包含 entitlements plist",
     "trollstore.entitlements.plist" in
     io.open(os.path.join(ROOT, "build", "ci_push_and_build.ps1"), encoding="utf-8").read())
 
+# ============ 11142643：SBStarkCapable（CarMovie 实证）============
+# "Stark" 是 Apple 内部 CarPlay 代号。CarMovie 靠这个私有 entitlement
+# 让 SpringBoard 给它 UIWindowScene role，从而用 UIKit 画界面、
+# 完全绕开 CPInterfaceController / CPListTemplate（二进制里 0 次）。
+chk("★ SBStarkCapable 已加入（SpringBoard CarPlay 私有开关）",
+    _entd.get("SBStarkCapable") is True)
+chk("carplay-audio 同时保留（车机图标前提）",
+    _entd.get("com.apple.developer.carplay-audio") is True)
+chk("未加 platform-application（会让 App 起不来）",
+    "platform-application" not in _entd)
+chk("未加 no-sandbox",
+    "com.apple.private.security.no-sandbox" not in _entd)
+chk("未加 absolute-path 全盘读写",
+    "com.apple.security.exception.files.absolute-path.read-write" not in _entd)
+
 print("=" * 50)
 print("Phase 1 static check:", "ALL PASS" if ok else "FAILED")
 sys.exit(0 if ok else 1)
