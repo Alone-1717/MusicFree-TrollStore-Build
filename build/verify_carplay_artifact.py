@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142631"
+EXPECTED_VERSION = "11142632"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -75,6 +75,8 @@ BINARY_MARKERS = [
     b"setRootTemplate dispatched (completion:nil)",
     b"AVAudioSession setCategory(Playback)",
     b"ON-SCREEN CONTENT: sectionCount=%lu dataSheets=%lu",
+    b"dispatchRootTemplate on main thread, ok",
+    b"WARN: dispatchRootTemplate on NON-MAIN thread",
 ]
 
 # 旧版已证伪/致命的标记，产物里绝不能再出现

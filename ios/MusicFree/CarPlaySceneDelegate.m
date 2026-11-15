@@ -986,6 +986,28 @@ static id<NSObject> sDataObserverToken = nil;
         _rootInstallInFlight = NO;
         return NO;
     }
+
+    /*
+     * 主线程校验（11142632）。
+     *
+     * CarPlay 模板 API 要求在主线程调用。之前十个版本从来没验证过这一点：
+     * installRootIfNeeded 可能被 MMKV 读取链、NSNotification 回调、
+     * 或 watchdog 的 dispatch_after 在后台队列上触发，
+     * 此时 setRootTemplate 可能被静默排队甚至丢弃 ——
+     * 与"调用发出、无响应、无错误、无回调"的现象吻合。
+     *
+     * 这里只诊断、不强行 dispatch_async：
+     * 直接跳到后台队列会破坏"必须在 didConnect 内同步发起"的不变量。
+     * 先让日志告诉我们真实情况。
+     */
+    if (![NSThread isMainThread]) {
+        MFCarPlayLogBoth(@"WARN: dispatchRootTemplate on NON-MAIN thread (thread=%@) "
+                         @"— CarPlay template APIs require main thread",
+              [NSThread currentThread]);
+    } else {
+        MFCarPlayLogBoth(@"dispatchRootTemplate on main thread, ok");
+    }
+
     [self recordRootInstallTimestamp];
 
     _rootGeneration += 1;
