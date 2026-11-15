@@ -34,6 +34,29 @@
 /** 车机播放控制 */
 + (void)emitControl:(NSString *)action;
 
+/* ============ 11142655：JS -> 原生 新通道 ============ */
+
+/**
+ * 原生 -> JS：请求联网搜索。
+ * JS 收到后调插件搜索，再用 setSearchResults:query: 回传。
+ */
++ (void)emitSearch:(NSString *)query;
+
+/**
+ * JS 运行时是否已就绪。
+ * 原生搜索页据此决定：
+ *   已就绪 -> 发 emitSearch 请求联网
+ *   未就绪 -> 只显示本地结果 + 提示
+ */
++ (BOOL)isJSReady;
+
+/** 最近一次联网搜索结果（JS 回传后保存在此） */
+- (NSArray *)searchResults;
+/** 最近一次搜索词（用于校验结果是否过期） */
+- (NSString *)lastSearchQuery;
+/** 最近一次播放状态快照 */
+- (NSDictionary *)nowPlayingState;
+
 /** JS 监听器注册完成后主动冲刷 RN 就绪前排队的车机事件 */
 - (void)carPlayJSReady;
 

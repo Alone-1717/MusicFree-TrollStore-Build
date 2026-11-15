@@ -402,6 +402,8 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 @property (nonatomic, strong) UITextField *searchField;
 @property (nonatomic, strong) NSArray<NSDictionary *> *sheets;
 @property (nonatomic, strong) NSArray<NSDictionary *> *results;
+/* 11142655：当前搜索词，用于校验 JS 回传结果是否过期 */
+@property (nonatomic, copy) NSString *currentQuery;
 
 - (void)reloadSheets;
 @end
@@ -432,6 +434,9 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 @property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, strong) UILabel *artistLabel;
 @property (nonatomic, strong) UILabel *timeLabel;
+/* 11142655：实时播放状态（JS 回传） */
+@property (nonatomic, strong) UIProgressView *progressView;
+@property (nonatomic, strong) UIButton *playPauseButton;
 @end
 
 
@@ -580,7 +585,13 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     [self refreshTabAppearance];
     [self reloadSheets];
 
-    MFCarPlayLogBoth(@"ROOT ready: 3 tabs (sheets/search/history), selected=0");
+    /* 11142655：监听 JS 回传的搜索结果 */
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleSearchResults:)
+                                                 name:@"MFCarPlaySearchResults"
+                                               object:nil];
+
+    MFCarPlayLogBoth(@"ROOT ready: 3 tabs + JS bridge listeners, selected=0");
 }
 
 /* 刷新 tab 高亮：选中=蓝色，未选=灰色 */
@@ -609,11 +620,58 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         [self.table reloadData];
         return;
     }
-    NSArray<NSDictionary *> *r = [self.carPlayDelegate searchForCarPlay:query] ?: @[];
-    self.results = r;
+
+    /*
+     * ============ 11142655：三级搜索 ============
+     *
+     * 1) 本地歌单搜索（立即出结果，不依赖 RN）
+     * 2) 若 JS 已就绪 -> 请求联网搜索
+     * 3) JS 结果回来后替换/追加（见 handleSearchResults:）
+     *
+     * 冷启动 RN 未起时，至少还有本地结果。
+     */
+    self.currentQuery = query;
+
+    NSArray<NSDictionary *> *local = [self.carPlayDelegate searchForCarPlay:query] ?: @[];
+    self.results = local;
     [self.table reloadData];
-    MFCarPlayLogBoth(@"ROOT search '%@' -> %lu results",
-          query, (unsigned long)r.count);
+
+    BOOL jsReady = [MFCarPlayBridge isJSReady];
+    MFCarPlayLogBoth(@"ROOT search '%@' -> local=%lu jsReady=%d",
+          query, (unsigned long)local.count, (int)jsReady);
+
+    if (jsReady) {
+        [MFCarPlayBridge emitSearch:query];
+    } else {
+        MFCarPlayLogBoth(@"ROOT search: JS not ready, local results only");
+    }
+}
+
+/*
+ * 11142655：JS 回传搜索结果。
+ * 校验 query 是否还是当前搜索词，避免旧结果覆盖新输入。
+ */
+- (void)handleSearchResults:(NSNotification *)note {
+    NSString *query = note.userInfo[@"query"];
+    NSArray *results = note.userInfo[@"results"];
+
+    if (![query isKindOfClass:[NSString class]] ||
+        ![results isKindOfClass:[NSArray class]]) {
+        return;
+    }
+    if (self.selectedTab != 1) {
+        return;   /* 已经切走，不刷 */
+    }
+    if (![query isEqualToString:self.currentQuery ?: @""]) {
+        MFCarPlayLogBoth(@"ROOT search: stale result for '%@' (current '%@'), ignored",
+              query, self.currentQuery ?: @"");
+        return;
+    }
+
+    self.results = results;
+    [self.table reloadData];
+    MFCarPlayLogBoth(@"ROOT search: JS returned %lu results for '%@'",
+          (unsigned long)results.count, query);
 }
 
 - (void)refreshTabAppearance {
@@ -1547,8 +1605,21 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     win.rootViewController = nav;
     [win makeKeyAndVisible];
 
-    /* 数据变化时刷新（解决"必须重启才显示"的问题） */
+    /* 数据变化时刷新 */
     [self registerWindowDataObserver];
+
+    /*
+     * ============ 11142655：主动初始化 RN 运行时 ============
+     *
+     * 解决冷启动问题：
+     *   车机以 intent background 拉起 App 时，RN bridge 是懒加载的，
+     *   如果用户没打开过主 App，JS 就不会跑，CarPlayBridge 的监听不注册，
+     *   联网搜索和播放状态全部失效。
+     *
+     * 这里主动触发一次，让 JS 侧 setupCarPlay() 执行。
+     * 初始化 2-5 秒，期间搜索只显示本地结果（有降级，不会卡）。
+     */
+    [self ensureReactNativeStarted];
 
     MFCarPlayLogBoth(@"SCENE willConnect: WINDOW PATH ACTIVE window=%p "
                      @"frame=%@ sceneClass=%@ sheets=%lu (TABLE UI)",
@@ -1575,6 +1646,28 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         MFCarPlayLogBoth(@"WINDOW DATA UPDATE -> reload root table");
         [strongSelf.windowRootVC reloadSheets];
     }];
+}
+
+/*
+ * 11142655：主动触发 RN 初始化。
+ * 通过 AppDelegate 的 mfEnsureReactNativeStarted 读取 self.bridge。
+ */
+- (void)ensureReactNativeStarted {
+    static BOOL sTriggered = NO;
+    if (sTriggered) {
+        return;
+    }
+    sTriggered = YES;
+
+    id delegate = [UIApplication sharedApplication].delegate;
+    if (![delegate respondsToSelector:@selector(mfEnsureReactNativeStarted)]) {
+        MFCarPlayLogBoth(@"RN init: AppDelegate has no mfEnsureReactNativeStarted");
+        return;
+    }
+
+    MFCarPlayLogBoth(@"RN init: triggering from CarPlay scene");
+    BOOL ok = (BOOL)[delegate performSelector:@selector(mfEnsureReactNativeStarted)];
+    MFCarPlayLogBoth(@"RN init: bridge %@", ok ? @"requested" : @"failed");
 }
 
 - (NSArray<NSDictionary *> *)historyForCarPlay {
@@ -2919,6 +3012,44 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
           title, artist, album, duration, progress,
           np[@"queueCount"] ?: @0,
           artwork.length > 0 ? @"yes" : @"no");
+
+    /*
+     * 11142655：监听 JS 回传的播放状态。
+     * 这一版只把状态记到日志 + 更新按钮文字，完整实时刷新在构建 B。
+     */
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleNowPlayingState:)
+                                                 name:@"MFCarPlayNowPlayingState"
+                                               object:nil];
+}
+
+/* 收到 JS 播放状态 */
+- (void)handleNowPlayingState:(NSDictionary *)state {
+    if (![state isKindOfClass:[NSDictionary class]]) {
+        return;
+    }
+    NSNumber *isPlaying = [state[@"isPlaying"] isKindOfClass:[NSNumber class]]
+        ? state[@"isPlaying"] : nil;
+    NSNumber *prog = [state[@"progress"] isKindOfClass:[NSNumber class]]
+        ? state[@"progress"] : nil;
+    NSNumber *dur = [state[@"duration"] isKindOfClass:[NSNumber class]]
+        ? state[@"duration"] : nil;
+
+    MFCarPlayLogBoth(@"NOWPLAYING state update: playing=%@ progress=%@ duration=%@",
+          isPlaying, prog, dur);
+
+    /* 更新播放/暂停按钮文字（构建 B 会换成图标） */
+    if (isPlaying && self.playPauseButton) {
+        NSString *t = isPlaying.boolValue ? @"\u23F8" : @"\u25B6";   /* ⏸ / ▶ */
+        [self.playPauseButton setTitle:t forState:0];
+    }
+
+    /* 更新时间文字 */
+    if (prog && dur && self.timeLabel) {
+        self.timeLabel.text = [NSString stringWithFormat:@"%@   /   %@",
+                               [self formatTime:prog.doubleValue],
+                               [self formatTime:dur.doubleValue]];
+    }
 }
 
 - (UIButton *)makeControlButton:(NSString *)text action:(SEL)action {

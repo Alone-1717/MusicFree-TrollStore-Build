@@ -122,6 +122,91 @@ async function handleControl(action: string) {
     }
 }
 
+/* ============ 11142655：JS -> 原生 新通道 ============ */
+
+/**
+ * 处理车机的联网搜索请求。
+ *
+ * 注意（构建 A 阶段）：
+ *   这里先只打日志 + 回传空数组，用来验证「原生 -> JS -> 原生」通路是否打通。
+ *   下一轮构建 B 再接真实插件搜索。
+ */
+async function handleSearch(query: string) {
+    trace(`[CarPlay] search request: "${query}"`);
+    try {
+        /*
+         * TODO(构建B)：接插件搜索
+         *   const results = await searchByPlugins(query);
+         * 现在先返回空，验证桥路。
+         */
+        const results: any[] = [];
+
+        NativeBridge?.setSearchResults?.(results, query);
+        trace(`[CarPlay] search reply: ${results.length} results`);
+    } catch (e) {
+        errorLog("[CarPlay] handleSearch", e);
+    }
+}
+
+/**
+ * 推送播放状态给原生（实时更新用）。
+ *
+ * 注意（构建 A 阶段）：
+ *   只是把当前 TrackPlayer 状态快照发过去，验证通路。
+ *   下一轮再加定时器做进度条实时刷新。
+ */
+async function pushNowPlayingState() {
+    if (!NativeBridge?.setNowPlayingState) {
+        return;
+    }
+    try {
+        /*
+         * 状态获取方式（已核对 trackPlayer 实现）：
+         *   currentMusic / repeatMode / quality  -> 同步 getter
+         *   progress                             -> getProgress() 异步
+         *   isPlaying                            -> getPlaybackState() 异步
+         */
+        const music = TrackPlayer.currentMusic;
+
+        let progress = 0;
+        let duration = music?.duration ?? 0;
+        try {
+            const p = await TrackPlayer.getProgress();
+            progress = p?.position ?? 0;
+            duration = p?.duration ?? duration;
+        } catch (e) {
+            /* 没在播放时会抛，忽略 */
+        }
+
+        let isPlaying = 0;
+        try {
+            const st = await TrackPlayer.getPlaybackState();
+            /* react-native-track-player 的 State.Playing = 3 */
+            isPlaying = st?.state === 3 ? 1 : 0;
+        } catch (e) {
+            /* 忽略 */
+        }
+
+        NativeBridge.setNowPlayingState({
+            title: music?.title ?? "",
+            artist: music?.artist ?? "",
+            album: music?.album ?? "",
+            artwork: music?.artwork ?? "",
+            progress,
+            duration,
+            isPlaying,
+            repeatMode: TrackPlayer.repeatMode ?? "loop",
+            quality: TrackPlayer.quality ?? "standard",
+            rate: 1.0,
+            isFavorite: 0,
+        });
+        trace(`[CarPlay] pushed state: ${music?.title ?? "(none)"} playing=${isPlaying} progress=${progress}`);
+    } catch (e) {
+        errorLog("[CarPlay] pushNowPlayingState", e);
+    }
+}
+
+
 /**
  * 启动时调用一次（bootstrap 里），注册所有监听。
  * 幂等：重复调用不会重复注册。
@@ -155,6 +240,13 @@ export function setupCarPlay() {
         }
     });
 
+    /* 11142655：车机搜索请求 -> JS 联网搜索 */
+    em.addListener("CarPlaySearch", (e: { query?: string }) => {
+        if (e?.query) {
+            handleSearch(e.query);
+        }
+    });
+
     // 连接时车机会主动发 requestSheets；RN 就绪后主动冲刷 pending 事件并先推一次，
     // 覆盖车机以 intent background 冷启动、RN bundle 晚到的时序竞态。
     try {
@@ -163,7 +255,14 @@ export function setupCarPlay() {
         errorLog("[CarPlay] carPlayJSReady", e);
     }
     pushSheets();
-    trace("[CarPlay] JS bridge started");
+
+    /*
+     * 11142655：注册完立刻推一次播放状态，让原生播放页能拿到初始值。
+     * 后续（构建 B）会加定时器做实时刷新。
+     */
+    pushNowPlayingState();
+
+    trace("[CarPlay] JS bridge started (search + state channels ready)");
 }
 
 export default {

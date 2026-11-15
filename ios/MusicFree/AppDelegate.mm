@@ -159,4 +159,42 @@
   dispatch_async(dispatch_get_main_queue(), attach);
 }
 
+
+#pragma mark - 11142655：CarPlay 主动初始化 RN
+
+- (BOOL)mfEnsureReactNativeStarted
+{
+  /*
+   * 读取 self.bridge 会触发 RCTAppDelegate 的懒加载：
+   *   创建 RCTBridge -> 加载 main.jsbundle -> 执行 JS -> bootstrap.ts 跑 setupCarPlay()
+   * 这才是 CarPlay JS 桥能注册监听的前提。
+   *
+   * 注意：
+   *   - bridge 已存在时 getter 直接返回，不会重复创建（幂等）
+   *   - 必须在主线程调用（RCTAppDelegate 要求）
+   *   - 初始化耗时 2-5 秒，是异步的；这里只负责"启动"，不等完成
+   */
+  if (![NSThread isMainThread]) {
+    __block BOOL result = NO;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+      result = [self mfEnsureReactNativeStarted];
+    });
+    return result;
+  }
+
+  @try {
+    id bridge = nil;
+    if ([self respondsToSelector:@selector(bridge)]) {
+      bridge = [self performSelector:@selector(bridge)];
+    }
+    BOOL ready = (bridge != nil);
+    NSLog(@"[MusicFree][CarPlay] mfEnsureReactNativeStarted -> bridge=%@",
+          ready ? @"created/existing" : @"nil");
+    return ready;
+  } @catch (NSException *e) {
+    NSLog(@"[MusicFree][CarPlay] mfEnsureReactNativeStarted threw: %@", e.reason);
+    return NO;
+  }
+}
+
 @end

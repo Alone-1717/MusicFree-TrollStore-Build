@@ -17,6 +17,24 @@
 static NSString *const kMFCarPlayEventNotification = @"MFCarPlayEventNotification";
 static NSString *const kMFCarPlayDataDidUpdate = @"MFCarPlayDataDidUpdate";
 
+/*
+ * 11142655：JS -> 原生 的三条新通道。
+ *
+ * 为什么需要它们：
+ *   进度条走动、播放/暂停图标切换、联网搜索都需要 JS 把状态回传给原生。
+ *
+ *   事件名（原生广播用）：
+ *     MFCarPlaySearchResults     JS 回传搜索结果
+ *     MFCarPlayNowPlayingState   JS 回传播放状态
+ *     MFCarPlayJSReady           JS 通知运行时已就绪
+ */
+static NSString *const kMFCarPlaySearchResults = @"MFCarPlaySearchResults";
+static NSString *const kMFCarPlayNowPlayingState = @"MFCarPlayNowPlayingState";
+static NSString *const kMFCarPlayJSReady = @"MFCarPlayJSReady";
+
+/* JS 就绪标记（进程级，供原生判断要不要等 JS） */
+static BOOL sJSReady = NO;
+
 /* 进程级静态：RN 就绪前的车机事件不能丢 */
 static NSMutableArray<NSDictionary *> *sPendingEvents = nil;
 static NSUInteger const kMFCarPlayMaxPendingEvents = 50;
@@ -26,6 +44,10 @@ static NSUInteger const kMFCarPlayMaxPendingEvents = 50;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSArray *> *tracksData;
 @property (nonatomic, strong) NSDictionary *nowPlayingData;
 @property (atomic, assign) BOOL hasListeners;
+/* 11142655：最近一次搜索结果与播放状态（供车机随时读取） */
+@property (nonatomic, strong) NSArray *searchResultsData;
+@property (nonatomic, strong) NSDictionary *nowPlayingStateData;
+@property (nonatomic, copy) NSString *lastSearchQuery;
 - (void)postDataUpdate:(NSDictionary *)userInfo;
 - (void)sendCarPlayEvent:(NSString *)name body:(NSDictionary *)body;
 - (void)flushPendingEvents;
@@ -53,6 +75,9 @@ static MFCarPlayBridge *sharedInstance = nil;
         _sheetsData = @[];
         _tracksData = [NSMutableDictionary dictionary];
         _nowPlayingData = @{};
+        _searchResultsData = @[];
+        _nowPlayingStateData = @{};
+        _lastSearchQuery = @"";
         sharedInstance = self;
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                  selector:@selector(handleCarPlayEvent:)
@@ -78,7 +103,8 @@ RCT_EXPORT_MODULE(CarPlayBridge);
 }
 
 - (NSArray<NSString *> *)supportedEvents {
-    return @[@"CarPlayPlayTrack", @"CarPlayRequestTracks", @"CarPlayControl"];
+    return @[@"CarPlayPlayTrack", @"CarPlayRequestTracks", @"CarPlayControl",
+             @"CarPlaySearch"];
 }
 
 - (void)startObserving {
@@ -104,8 +130,15 @@ RCT_EXPORT_METHOD(carPlayJSReady)
 {
     dispatch_async(dispatch_get_main_queue(), ^{
         self.hasListeners = YES;
+        sJSReady = YES;
         [self flushPendingEvents];
         [self postDataUpdate:@{@"kind": @"sheets"}];
+
+        /* 11142655：广播 JS 就绪，原生搜索页可据此决定是否请求联网 */
+        [[NSNotificationCenter defaultCenter] postNotificationName:kMFCarPlayJSReady
+                                                            object:nil
+                                                          userInfo:nil];
+        NSLog(@"[MusicFree][CarPlay] JS READY (sJSReady=1)");
     });
 }
 
@@ -133,6 +166,106 @@ RCT_EXPORT_METHOD(setNowPlaying:(NSString *)title artist:(NSString *)artist)
         @"artist": artist ?: @"",
     };
     [self postDataUpdate:@{@"kind": @"nowPlaying"}];
+}
+
+#pragma mark - 11142655：JS -> 原生 新通道
+
+/*
+ * JS 回传搜索结果。
+ *
+ * query 用于校验：原生可能已经换了搜索词，旧结果要丢弃。
+ * 结果同时写进 NSNotification，RootVC 收到后刷新表格。
+ */
+RCT_EXPORT_METHOD(setSearchResults:(NSArray *)results query:(NSString *)query)
+{
+    if (![query isKindOfClass:[NSString class]]) {
+        query = @"";
+    }
+    self.searchResultsData = [results isKindOfClass:[NSArray class]] ? results : @[];
+    self.lastSearchQuery = query;
+
+    NSLog(@"[MusicFree][CarPlay] BRIDGE got %lu search results for '%@'",
+          (unsigned long)self.searchResultsData.count, query);
+
+    [[NSNotificationCenter defaultCenter] postNotificationName:kMFCarPlaySearchResults
+                                                        object:nil
+                                                      userInfo:@{
+        @"query": query,
+        @"results": self.searchResultsData,
+    }];
+}
+
+/*
+ * JS 回传播放状态（实时更新用）。
+ *
+ * 字段（都可缺省）：
+ *   title, artist, album, artwork,
+ *   progress   NSNumber 秒
+ *   duration   NSNumber 秒
+ *   isPlaying  NSNumber BOOL
+ *   repeatMode NSString
+ *   quality    NSString
+ *   rate       NSNumber
+ *   isFavorite NSNumber BOOL
+ */
+RCT_EXPORT_METHOD(setNowPlayingState:(NSDictionary *)state)
+{
+    if (![state isKindOfClass:[NSDictionary class]]) {
+        return;
+    }
+    self.nowPlayingStateData = state;
+
+    /* 播放状态变化频繁（每秒一次），日志降噪：只在关键字段变化时打 */
+    static NSString *sLastSignature = nil;
+    NSString *signature = [NSString stringWithFormat:@"%@|%@|%@",
+                           state[@"title"] ?: @"",
+                           state[@"isPlaying"] ?: @"",
+                           state[@"progress"] ?: @""];
+    if (![signature isEqualToString:sLastSignature ?: @""]) {
+        sLastSignature = [signature copy];
+        NSLog(@"[MusicFree][CarPlay] BRIDGE nowPlayingState: %@ - %@ playing=%@ progress=%@",
+              state[@"title"] ?: @"?",
+              state[@"artist"] ?: @"?",
+              state[@"isPlaying"] ?: @"?",
+              state[@"progress"] ?: @"?");
+    }
+
+    [[NSNotificationCenter defaultCenter] postNotificationName:kMFCarPlayNowPlayingState
+                                                        object:nil
+                                                      userInfo:state];
+}
+
+/*
+ * 查询接口：原生搜索页可随时读取最近一次结果。
+ */
+- (NSArray *)searchResults {
+    return self.searchResultsData ?: @[];
+}
+
+- (NSString *)lastSearchQuery {
+    return _lastSearchQuery ?: @"";
+}
+
+- (NSDictionary *)nowPlayingState {
+    return self.nowPlayingStateData ?: @{};
+}
+
+/*
+ * 供原生判断 JS 是否就绪（决定搜索走本地还是请求联网）。
+ */
++ (BOOL)isJSReady {
+    return sJSReady;
+}
+
+/*
+ * 原生 -> JS：请求联网搜索。
+ */
++ (void)emitSearch:(NSString *)query {
+    if (![query isKindOfClass:[NSString class]] || query.length == 0) {
+        return;
+    }
+    [self postEvent:@"CarPlaySearch" body:@{@"query": query}];
+    NSLog(@"[MusicFree][CarPlay] emitted CarPlaySearch '%@'", query);
 }
 
 - (void)postDataUpdate:(NSDictionary *)userInfo {

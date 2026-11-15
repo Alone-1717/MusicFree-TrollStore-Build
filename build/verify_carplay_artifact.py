@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142654"
+EXPECTED_VERSION = "11142655"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -110,6 +110,14 @@ BINARY_MARKERS = [
     b"ROOT history tap row=%ld track=%@",
     b"ROOT search tap row=%ld track=%@",
     b"ROOT search tab: becomeFirstResponder called",
+    b"BRIDGE got %lu search results for '%@'",
+    b"BRIDGE JS is ready",
+    b"RN init: triggering from CarPlay scene",
+    b"RN init: bridge %@",
+    b"emitted CarPlaySearch '%@'",
+    b"ROOT search '%@' -> local=%lu jsReady=%d",
+    b"ROOT search: JS returned %lu results for '%@'",
+    b"NOWPLAYING state update: playing=%@ progress=%@ duration=%@",
 ]
 
 # 旧版已证伪/致命的标记，产物里绝不能再出现
