@@ -39,48 +39,55 @@
 	<key>com.apple.developer.team-identifier</key>
 	<string>TROLLTROLL</string>
 	<!--
-	  ============ 11142643：加入 SBStarkCapable（CarMovie 实证）============
+	  ============ 11142646：纯 CarMovie 式配置（只留 SBStarkCapable）============
 
-	  用正确的 Mach-O 代码签名解析器（按 CSSLOT slot 编号读 SuperBlob）
-	  读出了 CarMovie（jp.dcsyhi.CarMovie）的真实 entitlements：
+	  关键问题（之前设计错误，现已修正）：
 
-	    SBStarkCapable                                = True
-	    platform-application                          = True
-	    com.apple.private.security.no-sandbox          = True
-	    com.apple.security.exception.files.absolute-path.read-write = ['/']
-	    com.apple.private.MobileContainerManager.allowed = True
-	    com.apple.private.persona-mgmt                 = True
-	    com.apple.private.security.container-manager    = True
-	    com.apple.private.security.storage.*            = True
-	    com.apple.CommCenter.fine-grained               = ['data-allowed-write']
-	    com.apple.springboard.opensensitiveurl          = True
-	    CarPlay 相关（carplay-audio 等）                 = 【无】
+	    11142645 同时写入了
+	        com.apple.developer.carplay-audio = true
+	        SBStarkCapable = true
+	    这是**互斥的两条路**，系统很可能优先按 carplay-audio 走模板路径。
 
-	  **"Stark" 是 Apple 内部对 CarPlay 的代号**（Stark 项目）。
-	  SBStarkCapable 是 SpringBoard 层"此 App 可上 CarPlay"的私有开关。
+	  ============ 为什么要删 carplay-audio ============
 
-	  这解释了此前全部现象：
-	    - CarMovie 没有 carplay-audio，却能在车机显示
-	    - 它用 UIWindowSceneSessionRoleCarPlay + UIViewController 画界面，
-	      完全不碰 CPInterfaceController / CPListTemplate / setRootTemplate
-	    - 我们在 11142640 写了同样的 role，系统却不选它
-	      -> 因为缺少 SBStarkCapable，SpringBoard 不给 window role，
-	         仍然按 carplay-audio 分配 CPTemplateApplicationScene
+	  用 Mach-O 签名解析器读出 CarMovie（jp.dcsyhi.CarMovie）的真实 entitlement：
+	      SBStarkCapable = True
+	      platform-application = True
+	      ... 私有项
+	      carplay-audio = 【无】
+	  而它车机上图标正常、界面正常。
 
-	  本轮策略：**两个都保留**
-	    com.apple.developer.carplay-audio = true   -> 保证车机图标不消失
-	    SBStarkCapable = true                      -> 争取 SpringBoard 给 window role
+	  CarMovie 包里专门带了 CarPlayIcon120x120.png / CarPlayIcon180x180.png，
+	  说明 **SBStarkCapable 是"车机显示图标 + 分配 UIWindowScene 场景"的开关**，
+	  由 SpringBoard 层负责，与 carplayd 的 carplay-audio 是两套机制：
 
-	  为什么不加 platform-application：
-	    它让进程以 platform 身份运行，TrollStore 的 CoreTrust 签名不提供该身份，
-	    写了很可能导致系统直接拒绝启动（App 起不来），风险远高于收益。
-	  同理不加 no-sandbox、absolute-path.read-write 等高风险私有项。
+	    carplay-audio   -> carplayd -> CPTemplateApplicationScene
+	                       -> CPInterfaceController -> CPListTemplate 模板
+	                       -> 需要真实签名（TrollStore 下模板通道十轮实测恒为 0）
 
-	  已知风险：若 SBStarkCapable 在真机上还校验签名链，则无效（无副作用）；
-	  若 carplayd 因为它改变分类，可能连图标都受影响 —— 此时回滚本行。
+	    SBStarkCapable  -> SpringBoard -> UIWindowScene
+	                       -> UIWindowSceneSessionRoleCarPlay
+	                       -> 自建 UIViewController 画界面
+	                       -> CarMovie 在 TrollStore 下已证明可用
+
+	  ============ 为什么 11142641 删了 carplay-audio 会没图标 ============
+
+	  那一次删了 carplay-audio，但**还没有 SBStarkCapable**，
+	  两个都缺 -> SpringBoard 不显示图标。
+	  本次不同：SBStarkCapable 在，图标由它提供。
+
+	  ============ 保留但不加的项 ============
+
+	  platform-application：CarMovie 有，但它让进程以 platform 身份运行，
+	  TrollStore 的 CoreTrust 签名不提供该身份，加了很可能导致 App 起不来。
+	  先不加。如果 SBStarkCapable 单独无效，下一轮再考虑。
+
+	  no-sandbox / absolute-path 全盘读写：同理，风险高，不加。
+
+	  回滚：加回
+	      <key>com.apple.developer.carplay-audio</key><true/>
+	  即回到 11142640 的配置（有图标、模板通道死）。
 	-->
-	<key>com.apple.developer.carplay-audio</key>
-	<true/>
 	<key>SBStarkCapable</key>
 	<true/>
 	<key>keychain-access-groups</key>

@@ -355,10 +355,12 @@ _ent = io.open(os.path.join(ROOT, "scripts", "trollstore.entitlements.plist"),
                encoding="utf-8").read()
 import plistlib as _pl
 _entd = _pl.loads(_ent.encode("utf-8"))
-# 11142641 实测：移除 carplay-audio -> 车机图标直接消失（手机端正常）。
-# 证明它是"在 CarPlay 中出现图标"的前提，必须保留。
-chk("★ carplay-audio 必须存在（车机图标前提）",
-    _entd.get("com.apple.developer.carplay-audio") is True)
+# 11142646：修正设计。carplay-audio 与 SBStarkCapable 是互斥的两条路。
+# CarMovie 只有 SBStarkCapable、无 carplay-audio，车机图标和界面都正常。
+# 11142641 删 carplay-audio 后没图标，是因为当时**还没有 SBStarkCapable**，
+# 两者都缺才导致图标消失。本轮图标由 SBStarkCapable 提供。
+chk("★ 已移除 carplay-audio（避免拉回模板路径）",
+    "com.apple.developer.carplay-audio" not in _entd)
 chk("application-identifier 保留",
     _entd.get("application-identifier") == "app.musicfree.ios")
 chk("team-identifier 保留",
@@ -379,14 +381,22 @@ chk("CI 推送列表包含 entitlements plist",
 # 完全绕开 CPInterfaceController / CPListTemplate（二进制里 0 次）。
 chk("★ SBStarkCapable 已加入（SpringBoard CarPlay 私有开关）",
     _entd.get("SBStarkCapable") is True)
-chk("carplay-audio 同时保留（车机图标前提）",
-    _entd.get("com.apple.developer.carplay-audio") is True)
+chk("SBStarkCapable 与 carplay-audio 不同时存在（互斥）",
+    not (_entd.get("SBStarkCapable") is True
+         and _entd.get("com.apple.developer.carplay-audio") is True))
 chk("未加 platform-application（会让 App 起不来）",
     "platform-application" not in _entd)
 chk("未加 no-sandbox",
     "com.apple.private.security.no-sandbox" not in _entd)
 chk("未加 absolute-path 全盘读写",
     "com.apple.security.exception.files.absolute-path.read-write" not in _entd)
+
+# CarMovie 包里专门带 CarPlayIcon120x120.png / CarPlayIcon180x180.png，
+# 这是 SBStarkCapable 路径下的车机图标命名。
+chk("CarPlayIcon120x120.png 存在",
+    os.path.exists(os.path.join(ROOT, "ios", "MusicFree", "CarPlayIcon120x120.png")))
+chk("CarPlayIcon180x180.png 存在",
+    os.path.exists(os.path.join(ROOT, "ios", "MusicFree", "CarPlayIcon180x180.png")))
 
 print("=" * 50)
 print("Phase 1 static check:", "ALL PASS" if ok else "FAILED")
