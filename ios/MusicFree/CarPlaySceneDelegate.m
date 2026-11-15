@@ -123,6 +123,7 @@ static id<NSObject> sDataObserverToken = nil;
 - (CPInterfaceController *)interfaceControllerFromScene:(UIScene *)scene;
 - (void)recoverTemplateScene:(UIScene *)scene reason:(NSString *)reason;
 - (void)refreshRootSections;
+- (void)applySectionsToRootTemplate:(NSArray<CPListSection *> *)sections;
 - (void)pushTracksForSheet:(NSString *)sheetId title:(NSString *)title;
 - (NSArray<CPListItem *> *)buildTrackItems:(NSArray<NSDictionary *> *)tracks
                                     sheetId:(NSString *)sheetId;
@@ -164,6 +165,10 @@ static id<NSObject> sDataObserverToken = nil;
     BOOL _observerOwnedByMe;
     /* 是否已记录过"数据来自原生"（避免刷屏） */
     BOOL _nativeSheetsUsed;
+    /* 数据准备日志只打一次详情，之后精简 */
+    BOOL _nativeDataLogged;
+    /* 缓存最近一次准备好的 sections，供 root 被接受后补推 */
+    NSArray<CPListSection *> *_lastSections;
     /* 已经对哪个 controller 调用过 setRootTemplate（一个 controller 只准一次） */
     __weak CPInterfaceController *_rootInstalledFor;
     __weak CPTemplateApplicationScene *_templateScene;
@@ -236,6 +241,12 @@ static id<NSObject> sDataObserverToken = nil;
     }
     _templateScene = nil;
     self.interfaceController = nil;
+    /*
+     * 必须清掉 window 引用：重连时框架会创建新的 CPWindow，
+     * 如果这里留着旧的失效引用，新模板会挂到已销毁的 window 上，
+     * 表现又是"提交了但黑屏"。
+     */
+    self.carWindow = nil;
     _rootList = nil;
     _currentSheetId = nil;
     _currentSheetTitle = nil;
@@ -336,6 +347,17 @@ static id<NSObject> sDataObserverToken = nil;
      * ==================================================================
      */
     [self installRootIfNeeded];
+
+    /*
+     * 独立触发一次"数据准备"，不等 completion。
+     *
+     * 这么做有两个目的（对应评审意见）：
+     *   1) 让 [native-data] 日志立刻出现 —— 数据层可独立验证，
+     *      不被 setRootTemplate 的状态挡住。
+     *   2) 把 sections 缓存进 _lastSections，等 root 真被接受时能直接补推。
+     */
+    [self refreshRootSections];
+
     [self requestSheetsNow];
     [self scheduleRequestSheetsRetries];
 }
@@ -927,37 +949,75 @@ static id<NSObject> sDataObserverToken = nil;
 }
 
 - (void)refreshRootSections {
-    if (!_rootList) {
-        return;
-    }
-    CPInterfaceController *ic = self.interfaceController;
-    if (!ic) {
-        return;
-    }
     /*
-     * 推送闸门（11142622 修正）：
+     * ============ 架构：数据准备 与 UI 提交 彻底拆开 ============
      *
-     * 11142621 日志证明 completion 可能永远不回调，导致 _rootApplied 恒为 0，
-     * 于是这里永远 return，currentRootSections 从不执行 —— 原生数据一次都没读过。
+     * 11142621 的教训：_rootApplied 由 completion 置位，completion 不回调，
+     * 于是数据准备这一步被 UI 前置条件挡住，原生数据一次都没读，
+     * 日志里一条 [native-data] 都没有 —— 这是可观测性 bug。
      *
-     * 现在的判据：
-     *   - 有 _rootList 就值得尝试 updateSections（updateSections 本身是安全调用，
-     *     模板没上屏也只是无效，不会打断连接）。
-     *   - 若 _rootApplied == NO，额外用 topTemplate 核对一次，能确认就置位；
-     *     核对不上**也照样推**，因为模板内容正确比状态标记更重要。
-     *     这正是黑屏要解决的核心：让车机看到内容。
+     * 现在：
+     *   第一步 数据准备：**无条件执行**，只读本地（MMKV），不碰任何 CarPlay 状态。
+     *                    执行完立刻打日志，这样数据层可以独立验证。
+     *   第二步 UI 提交：才检查 _rootApplied / interfaceController / carWindow。
+     *                    条件不满足就只缓存，等 root 被接受后补推。
      */
+
+    /* ---------- 第一步：数据准备（不依赖任何 CarPlay 状态） ---------- */
+    NSArray<CPListSection *> *sections = [self currentRootSections];
+    _lastSections = sections;
+
+    if (!_nativeDataLogged) {
+        _nativeDataLogged = YES;
+        MFCarPlayLogBoth(@"refresh: data ready sections=%lu (first time)",
+              (unsigned long)sections.count);
+    } else {
+        MFCarPlayLogBoth(@"refresh: data ready sections=%lu", (unsigned long)sections.count);
+    }
+
+    /* ---------- 第二步：UI 提交 ---------- */
+    if (!_rootList) {
+        MFCarPlayLogBoth(@"refresh: no rootList yet, cached %lu sections",
+              (unsigned long)sections.count);
+        return;
+    }
     if (!_rootApplied) {
+        /*
+         * 不依赖 completion：这里再试一次框架真相核对（双通道置位的 B 通道）。
+         * 若 topTemplate 就是我们的 list，说明框架已接受但 completion 丢了。
+         * 该核对内部有 _templateReady 门，握手未结算时不会碰同步属性。
+         */
         if (_templateReady && [self syncAppliedStateFromFramework]) {
-            MFCarPlayLogBoth(@"refreshRootSections: framework confirmed, applied=1");
+            MFCarPlayLogBoth(@"refresh: applied via framework check (completion was lost)");
         } else {
-            MFCarPlayLogBoth(@"refreshRootSections: applied=0 but pushing anyway (content over state)");
+            MFCarPlayLogBoth(@"refresh: root not applied yet, cache only (%lu sections)",
+                  (unsigned long)sections.count);
+            return;
         }
     }
-    NSArray<CPListSection *> *sections = [self currentRootSections];
+    if (!self.interfaceController || !self.carWindow) {
+        MFCarPlayLogBoth(@"refresh: no interfaceController(%d)/carWindow(%d), skip push",
+              self.interfaceController != nil, self.carWindow != nil);
+        return;
+    }
+
     [_rootList updateSections:sections];
-    MFCarPlayLogBoth(@"updateSections root sections=%lu sheetsReceived=%d applied=%d",
-          (unsigned long)sections.count, _sheetsReceived, _rootApplied);
+    MFCarPlayLogBoth(@"updateSections root sections=%lu sheetsReceived=%d applied=%d window=%d",
+          (unsigned long)sections.count, _sheetsReceived, _rootApplied, self.carWindow != nil);
+}
+
+/* 把 sections 应用到当前 root 模板（供 completion 成功后补推复用） */
+- (void)applySectionsToRootTemplate:(NSArray<CPListSection *> *)sections {
+    if (!_rootList) {
+        MFCarPlayLogBoth(@"applySections: no rootList");
+        return;
+    }
+    if (!sections) {
+        sections = _lastSections ?: [self currentRootSections];
+    }
+    [_rootList updateSections:sections];
+    MFCarPlayLogBoth(@"applySections: applied %lu sections to root",
+          (unsigned long)sections.count);
 }
 
 #pragma mark - 歌单子页

@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142622"
+EXPECTED_VERSION = "11142623"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -49,6 +49,8 @@ BINARY_MARKERS = [
     b"didConnect WITH CPWindow=%p ctrl=%p",
     b"carWindow attached & key",
     b"pushing anyway",
+    b"data ready sections=",
+    b"applied via framework check",
     b"recoverTemplateScene",
     b"rebind controller",
     b"carPlayJSReady",
