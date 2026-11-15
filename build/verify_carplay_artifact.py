@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142628"
+EXPECTED_VERSION = "11142629"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -71,6 +71,9 @@ BINARY_MARKERS = [
     b"CarPlayPlayTrack",
     b"CarPlayRequestTracks",
     b"MFCarPlayDataDidUpdate",
+    b"dataSheets=",
+    b"scene KVC interfaceController failed:",
+    b"caller will skip rebind",
 ]
 
 # 旧版已证伪/致命的标记，产物里绝不能再出现

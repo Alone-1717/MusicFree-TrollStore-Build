@@ -170,6 +170,12 @@ static id<NSObject> sDataObserverToken = nil;
     BOOL _nativeDataLogged;
     /* 缓存最近一次准备好的 sections，供 root 被接受后补推 */
     NSArray<CPListSection *> *_lastSections;
+    /*
+     * 数据源快照：currentRootSections 每次构建时写入。
+     * 指纹计算和上屏探针都从这里取，绝不读 CPListSection.items /
+     * CPListItem.text（非公开 API，读了是 unrecognized selector）。
+     */
+    NSArray *_lastSheetsSnapshot;
     /* 上一次真正推送给 updateSections: 的内容指纹，用于去重防闪烁 */
     NSString *_lastPushedFingerprint;
     /* 已经对哪个 controller 调用过 setRootTemplate（一个 controller 只准一次） */
@@ -249,40 +255,39 @@ static id<NSObject> sDataObserverToken = nil;
      *   "one-shot armed (sections=K)" 和 "refresh: data ready sections=K"
      *   只能证明**我自己读到的数据两次一致**，证明不了模板真的把内容送到了车机。
      *
-     * 用**公开只读属性** sectionCount —— 不是 KVC。
-     * KVC 读私有 ivar 在模板对象上属于未定义行为，而且 sections 即使能读到，
-     * 返回的也只是我传进去的那个数组，信息量不比 sectionCount 多。
+     * ============ 只用确定公开的 API ============
+     *   sectionCount  —— CPListTemplate 的公开只读属性（Apple 文档有），可以读。
+     *   sections / items / text / detailText —— **不是公开 API**。
+     *     之前我在本文件的 clang 桩里顺手声明了它们，于是 clang 放行，
+     *     但真机上会是 unrecognized selector 直接 crash —— 比 KVC 抛异常更隐蔽，
+     *     因为编译期完全静默。现在桩里已把这些声明删掉，编译器会替我们拦住。
      *
-     * 判据边界（重要）：
-     *   sectionCount 是**分组数，不是条目数**。
-     *   本项目 currentRootSections 永远返回 1 个 section 装 N 个 item，
-     *   所以 sectionCount 只能是 0 或 1；条目数另外累加 items。
+     *   条目不从模板侧反查，改从**数据侧** _lastSections 统计。
+     *   语义反而更清楚：
+     *     sectionCount = 模板当前持有几组
+     *     dataItems    = 数据侧一共几条
+     *   两者对照比"模板侧 section 数 vs 模板侧 item 数"更有诊断价值。
      *
-     *   sectionCount == 0 + 车机空  -> 建模板时 sections 就是空的，
-     *                                  回查 [native-data] sheets total
-     *   sectionCount  > 0 + 车机空  -> 数据进了模板，问题在
-     *                                  CPListSection/CPListItem 构造（text 为空、
-     *                                  item 未设 handler、初始化参数错）或框架渲染
+     * 判据边界（含 M == 0，别漏最后一行）：
+     *   S == 0                     -> 不该发生，currentRootSections 返回了空数组，真 bug
+     *   S == 1, I == 1, M > 0      -> 数据没进 items，查 sheetItems 构建/过滤
+     *   S == 1, I == M (>0)        -> 内容正确，车机还空就是渲染端/框架问题
+     *   S == 1, I == 1, M == 0     -> 空态正常（"暂无歌单"/"正在加载"），不是 bug
+     *
+     * 条件用 isList 而不是 isSameObject：
+     *   rearm 会把 _rootList 换成新对象，若首发模板的 didAppear 在 rearm 之后
+     *   才到，isSameObject 为 0 —— 探针整段跳过，而这恰恰是最需要日志的时刻。
+     *   sameAsRoot 仍打日志里，能看出是不是 rearm 后的新模板。
      */
-    if (isSameObject && _rootList) {
-        NSUInteger secCount = _rootList.sectionCount;
-        NSUInteger itemCount = 0;
-        NSArray<CPListSection *> *secs = _rootList.sections;
-        if ([secs isKindOfClass:[NSArray class]]) {
-            for (CPListSection *s in secs) {
-                if ([s respondsToSelector:@selector(items)]) {
-                    itemCount += s.items.count;
-                }
-            }
-        }
-        MFCarPlayLogBoth(@"ON-SCREEN CONTENT: sectionCount=%lu items=%lu appliedBefore=%d",
-              (unsigned long)secCount, (unsigned long)itemCount, _rootApplied);
+    if (isList) {
+        CPListTemplate *probe = (CPListTemplate *)template;
+        NSUInteger secCount = probe.sectionCount;
+        NSUInteger dataSheets = [(NSArray *)(_lastSheetsSnapshot ?: @[]) count];
+        MFCarPlayLogBoth(@"ON-SCREEN CONTENT: sectionCount=%lu dataSheets=%lu appliedBefore=%d sameAsRoot=%d",
+              (unsigned long)secCount, (unsigned long)dataSheets, _rootApplied, isSameObject);
         if (secCount == 0) {
             MFCarPlayLogBoth(@"WARN: template on screen but sectionCount==0 — "
-                             @"first-frame template was built empty; check [native-data] sheets total");
-        } else if (itemCount == 0) {
-            MFCarPlayLogBoth(@"WARN: sectionCount>0 but items==0 — "
-                             @"check CPListItem construction (text/handler)");
+                             @"currentRootSections returned an EMPTY array (real bug)");
         }
     }
 
@@ -480,14 +485,22 @@ static id<NSObject> sDataObserverToken = nil;
      * 官方推荐的获取渠道是 didConnectInterfaceController: 参数，那条路已经走了；
      * 这里只是被动重绑时的兜底，取不到就返回 nil（调用方会跳过，不会崩）。
      *
-     * 其余所有属性访问都已改为公开 API（CPListTemplate.sectionCount/.sections、
-     * CPListSection.items、CPListItem.text/.detailText）。
+     * 其余所有属性访问都走公开 API（CPListTemplate.sectionCount），
+     * 或走自有数据快照（_lastSheetsSnapshot），不再碰框架对象的非公开成员。
+     *
+     * @catch 必须打日志：这处若真的失败，调用方会静默跳过重绑，
+     * 车机上表现为"生命周期回调不生效"，不打日志就完全无从查起。
      */
     @try {
         ic = [(CPTemplateApplicationScene *)scene valueForKey:@"interfaceController"];
     } @catch (NSException *e) {
-        (void)e;
+        MFCarPlayLogBoth(@"scene KVC interfaceController failed: %@ (%@)",
+              e.reason, e.name);
         ic = nil;
+    }
+    if (!ic) {
+        MFCarPlayLogBoth(@"scene KVC returned nil/empty for interfaceController — "
+                         @"caller will skip rebind (harmless, but note it)");
     }
     return [ic isKindOfClass:[CPInterfaceController class]] ? (CPInterfaceController *)ic : nil;
 }
@@ -649,6 +662,16 @@ static id<NSObject> sDataObserverToken = nil;
 
 - (NSArray<CPListSection *> *)currentRootSections {
     NSArray *sheetItems = [self sheets];
+
+    /*
+     * 每次构建 sections 时，把**数据源快照**存下来。
+     *
+     * 用途：指纹计算和上屏探针都改从这里取，不再去读 CPListSection.items /
+     * CPListItem.text —— 那两个都不是公开 API，读了是 unrecognized selector
+     * 崩溃。快照是我自己的数据，绝对安全。
+     */
+    _lastSheetsSnapshot = [sheetItems isKindOfClass:[NSArray class]] ? sheetItems : @[];
+
     if (sheetItems.count == 0) {
         /* RN 已经回过数据但仍为空 -> 显示真实空态；否则保持加载占位 */
         return _sheetsReceived ? @[[[CPListSection alloc] initWithItems:@[
@@ -1209,35 +1232,64 @@ static id<NSObject> sDataObserverToken = nil;
 }
 
 /*
- * sections 内容指纹：只取"用户可见的文字"，不取对象地址。
- * 覆盖标题 + 副标题 + 每个 section 的 item 数。
- * 歌单增删改、数量变化都会改变指纹，从而允许重推。
+ * sections 内容指纹：反映"当前 UI 该显示什么"，不只是"数据数组长什么样"。
  *
- * 全部走**公开只读属性**（CPListSection.items / CPListItem.text /
- * CPListItem.detailText），不用 KVC —— KVC 读私有 ivar 是未定义行为。
- * 仍然保留 respondsToSelector 防御，避免 SDK 版本差异导致 unrecognized selector。
+ * ============ 为什么不再遍历 CPListSection / CPListItem ============
+ *   CPListSection.items、CPListItem.text / detailText **都不是公开 API**。
+ *   之前我在 clang 桩里顺手声明了它们，编译期静默放行，真机上却是
+ *   unrecognized selector 直接 crash。现在改为对数据快照计算。
+ *
+ * ============ 为什么必须把显示状态也算进指纹 ============
+ *   currentRootSections 有三种状态，其中两种的快照都是空数组：
+ *     桥接未回   _sheetsReceived=NO   snapshot=[]   "正在加载歌单…"
+ *     桥接回了空 _sheetsReceived=YES  snapshot=[]   "暂无歌单"
+ *     有歌单     _sheetsReceived=YES  snapshot=[M]  M 个 item
+ *
+ *   如果只对 snapshot 算指纹，前两种指纹完全相同（都是 "n=0"），
+ *   于是"正在加载 -> 暂无歌单"这一步会被去重闸门挡掉：
+ *     首屏建"正在加载" -> 指纹 "n=0|loading"
+ *     桥接回空 -> 指纹 "n=0|loading" -> skip -> 车机永远停在"正在加载"
+ *   数据层日志一切正常，排查会绕一大圈。
+ *
+ *   所以指纹 = 显示状态标记 + 快照内容。状态一变指纹必变，
+ *   该推的时候就推，不该推的时候仍然挡住。
  */
 - (NSString *)sectionsFingerprint:(NSArray<CPListSection *> *)sections {
+    (void)sections;
+    NSArray *snapshot = _lastSheetsSnapshot ?: @[];
+
+    /*
+     * 状态标记：直接对应 currentRootSections 会返回哪一种 section。
+     *   loading  ：快照空 + 未收到数据      -> "正在加载歌单…"
+     *   empty    ：快照空 + 已收到数据      -> "暂无歌单"
+     *   sheets   ：快照非空                 -> M 个歌单 item
+     */
+    NSString *state;
+    if (snapshot.count > 0) {
+        state = @"sheets";
+    } else if (_sheetsReceived) {
+        state = @"empty";
+    } else {
+        state = @"loading";
+    }
+
     NSMutableString *buf = [NSMutableString string];
-    for (CPListSection *sec in sections) {
-        NSArray<CPListItem *> *items = nil;
-        if ([sec respondsToSelector:@selector(items)]) {
-            items = sec.items;
+    [buf appendFormat:@"state=%@|n=%lu", state, (unsigned long)snapshot.count];
+    for (id s in snapshot) {
+        if (![s isKindOfClass:[NSDictionary class]]) {
+            [buf appendString:@"(non-dict)"];
+            continue;
         }
-        [buf appendFormat:@"[%lu]", (unsigned long)([items isKindOfClass:[NSArray class]] ? items.count : 0)];
-        if ([items isKindOfClass:[NSArray class]]) {
-            for (CPListItem *it in items) {
-                NSString *t = nil;
-                NSString *d = nil;
-                if ([it respondsToSelector:@selector(text)]) {
-                    t = it.text;
-                }
-                if ([it respondsToSelector:@selector(detailText)]) {
-                    d = it.detailText;
-                }
-                [buf appendFormat:@"(%@|%@)", t ?: @"", d ?: @""];
-            }
-        }
+        NSDictionary *d = (NSDictionary *)s;
+        id sid = d[@"id"];
+        id title = d[@"title"];
+        id count = d[@"count"];
+        NSString *sidStr = [sid isKindOfClass:[NSString class]] ? sid
+                          : ([sid respondsToSelector:@selector(stringValue)] ? [sid stringValue] : @"");
+        NSString *titleStr = [title isKindOfClass:[NSString class]] ? title : @"";
+        NSString *countStr = [count isKindOfClass:[NSNumber class]]
+                             ? [count stringValue] : @"";
+        [buf appendFormat:@"(%@|%@|%@)", sidStr, titleStr, countStr];
     }
     return buf;
 }
