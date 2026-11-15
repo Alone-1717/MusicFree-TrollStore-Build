@@ -353,7 +353,21 @@ static id<NSObject> sDataObserverToken = nil;
         _rearmPending = NO;
         _templateReady = YES;
         if (!wasApplied) {
-            MFCarPlayLogBoth(@"ROOT TEMPLATE VISIBLE -> applied=1, push content now");
+            /*
+             * 评审要求的诊断行：路径 B 下能直接看出
+             * refreshRootSections 有没有被调用、是否会被指纹闸门挡住。
+             *
+             *   hasFingerprint=0 -> 闸门放行，一定会推送
+             *   hasFingerprint=1 -> 与某次推送内容相同，会被 skip
+             *
+             * 空模板方案里 _lastPushedFingerprint 已置 nil，
+             * 所以这里应当恒为 0。
+             */
+            MFCarPlayLogBoth(@"ROOT TEMPLATE VISIBLE -> applied=1, about to refresh "
+                             @"(wasApplied=%d hasFingerprint=%d rootList=%p)",
+                  wasApplied,
+                  (_lastPushedFingerprint != nil),
+                  (__bridge void *)_rootList);
             [self refreshRootSections];
         } else {
             MFCarPlayLogBoth(@"template appeared again, already applied (no re-push)");
@@ -1110,38 +1124,75 @@ static id<NSObject> sDataObserverToken = nil;
      * 原生数据源 (MMKV) 是同步读的，在 didConnect 里调用完全安全
      * （不碰 CarPlay 的任何同步属性，只读本地文件）。
      */
-    NSArray<CPListSection *> *bootSections = [self currentRootSections];
-    CPListTemplate *list = [[CPListTemplate alloc] initWithTitle:@"音乐"
-                                                        sections:bootSections];
+    /*
+     * ============ 11142635：空模板先上屏，数据靠 updateSections 后填 ============
+     *
+     * 这是 MusicFree 与参考实现（missuo/kumone，上架 App Store 的 CarPlay
+     * 音频 App）**最后一处结构性差异**，也是本轮唯一变量。
+     *
+     * kumone 的做法（CarPlayConnector.makeRootTemplate，L195-210）：
+     *     let recommend = CPListTemplate(title: "推荐", sections: [])   // 空
+     *     ...
+     *     interfaceController.setRootTemplate(root, animated: true, completion: nil)
+     * 数据是随后在 updateLibraryTab() / updateFMTab() 里通过
+     *     libraryTab.updateSections(sections)
+     * 异步填进去的。也就是说：**空模板先上屏，内容后到**。
+     *
+     * 我之前的做法是把 MMKV 读到的歌单直接塞进 initWithTitle:sections:，
+     * 等于把"模板提交"和"内容校验"绑在一起。如果 carplayd 对首次
+     * setRootTemplate 的模板内容做校验（item 数量/字段完整性/…），
+     * 空模板可能反而能通过 —— 这能解释为什么 setRootTemplate 一直静默。
+     *
+     * 降级路径（三种都有明确下一步）：
+     *   A) templateDidAppear 出现 + updateSections 生效 -> 车机出列表，收工
+     *   B) templateDidAppear 出现但车机空           -> 模板提交通了，
+     *                                                  问题转到 updateSections/内容构造
+     *   C) templateDidAppear 仍不出现               -> 空模板也不被接受，
+     *                                                  回到底层（连接/签名/环境）
+     *
+     * 注意 emptyViewTitleVariants：这是**有证据的公开 API** ——
+     * kumone 里用了 12 次（recommend/curated/fm/library 各 tab 都设）。
+     * emptyViewSubtitleVariants 则**刻意不用**：kumone 一次都没用，无证据。
+     */
+    CPListTemplate *list = [[CPListTemplate alloc] initWithTitle:@"音乐" sections:@[]];
     _rootList = list;
 
+    /* 空模板上屏时的占位文案（等价于 kumone 的 emptyViewTitleVariants） */
+    @try {
+        SEL evSel = NSSelectorFromString(@"setEmptyViewTitleVariants:");
+        if ([list respondsToSelector:evSel]) {
+            ((void (*)(id, SEL, id))objc_msgSend)(list, evSel,
+                                                  @[@"正在加载歌单…"]);
+            MFCarPlayLogBoth(@"emptyViewTitleVariants set on root template");
+        } else {
+            MFCarPlayLogBoth(@"emptyViewTitleVariants NOT available on CPListTemplate "
+                             @"(no crash, placeholder text skipped)");
+        }
+    } @catch (NSException *e) {
+        MFCarPlayLogBoth(@"setEmptyViewTitleVariants threw: %@", e.reason);
+    }
+
     /*
-     * 关键一行：把"首屏模板已带的数据"记进指纹。
+     * 指纹必须置空（评审指出的关键坑）。
      *
-     * 为什么必须有：
-     *   attachInterfaceController 里紧接着就调 refreshRootSections。
-     *   如果这里不记指纹，_lastPushedFingerprint 还是 nil，去重闸门放行，
-     *   refreshRootSections 会拿同样内容**新建一批 CPListItem 对象**再推一次。
-     *   CarPlay 收到全新对象会当作内容变化重渲染 —— 首屏闪一下、滚动位置重置。
-     *
-     *   记上指纹后，紧随的 refreshRootSections 会打
-     *     "refresh: content unchanged, skip updateSections"
-     *   首屏不闪；后续 templateDidAppear 里的 refresh 同样被挡住；
-     *   只有歌单真的增删改（指纹变化）才重推。
+     * 模板现在是空的，任何一次 refreshRootSections 算出的真实指纹
+     * 都与空不同，因此 templateDidAppear 之后一定会推送。
+     * 如果这里沿用"首屏已带数据"的指纹，后续 updateSections 会被
+     * 去重闸门挡掉 —— 那就是"空模板上屏 + 永远空列表"。
      */
-    _lastPushedFingerprint = [self sectionsFingerprint:bootSections];
+    _lastPushedFingerprint = nil;
 
     if (allowRearm) {
-        MFCarPlayLogBoth(@"rearm #%lu controller=%p (fresh template=%p, sections=%lu)",
-              (unsigned long)_rearmCount, (__bridge void *)ic, (__bridge void *)list,
-              (unsigned long)bootSections.count);
+        MFCarPlayLogBoth(@"rearm #%lu controller=%p (fresh EMPTY template=%p, no sections yet)",
+              (unsigned long)_rearmCount, (__bridge void *)ic, (__bridge void *)list);
     } else {
-        MFCarPlayLogBoth(@"one-shot root install armed controller=%p (sections=%lu)",
-              (__bridge void *)ic, (unsigned long)bootSections.count);
+        MFCarPlayLogBoth(@"one-shot root install armed controller=%p (EMPTY template, "
+                         @"data will be pushed after templateDidAppear)",
+              (__bridge void *)ic);
     }
 
     [self dispatchRootTemplate:list];
-    MFCarPlayLogBoth(@"native placeholder root installed (animated=NO)");
+    MFCarPlayLogBoth(@"native placeholder root installed (animated=YES — matches setRootTemplate call)");
 
     [self scheduleRootWatchdogForController:ic];
 }

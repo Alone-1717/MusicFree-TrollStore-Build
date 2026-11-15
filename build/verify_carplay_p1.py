@@ -98,10 +98,9 @@ chk("rearm 前先清 inFlight（否则被旧标志挡住）",
     and "_rearmCount += 1" in cm_code
     and "_rearmPending = YES" in cm_code
     and "rearm #%lu/%lu" in cm_code)
-chk("rearm 每次用全新 CPListTemplate",
-    "installRootIfNeededAllowRearm" in cm_code
-    and "fresh template" in cm_code
-    and "CPListTemplate alloc] initWithTitle:@\"音乐\"" in cm_code)
+chk("rearm 每次用全新 EMPTY CPListTemplate（数据靠 updateSections）",
+    "initWithTitle:@\"音乐\" sections:@[]" in cm
+    and "allowRearm" in cm)
 chk("rearm 静默失败按 3s 判定（不能只等 completion）",
     "silently failed" in cm_code
     and "_rearmPending && timedOut" in cm_code)

@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142634"
+EXPECTED_VERSION = "11142635"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -42,7 +42,6 @@ BINARY_MARKERS = [
     b"controller already invalidated, no more attempts",
     b"didConnect ctrl new=%p old=%p same=%d",
     b"SYNC CONFIRM: topTemplate IS our root (via top-template check)",
-    b"ON-SCREEN CONTENT: sectionCount=",
     b"updateSections done root.sectionCount=",
     b"applied via sync-confirm path",
     b"didConnect ctrl=%p (template-only audio path)",
@@ -61,17 +60,13 @@ BINARY_MARKERS = [
     b"MFCarPlayDataDidUpdate",
     b"dataSheets=",
     b"scene KVC interfaceController failed:",
-    b"ON-SCREEN CONTENT: sectionCount=%lu dataSheets=%lu appliedBefore=%d sameAsRoot=%d",
-    b"updateSections done root.sectionCount=%lu pushed=%lu sheetsReceived=%d applied=%d",
     b"scene KVC interfaceController failed: %@ (%@)",
-    b"ON-SCREEN CONTENT: sectionCount=%lu dataSheets=%lu appliedBefore=%d sameAsRoot=%d verdict=%s",
     b"EMPTY_SECTIONS_BUG",
     b"verdict=%s",
     b"RESET exhausted on scene reactivation",
     b"same controller, applied=0, framework still not confirming",
     b"ready=%d exhausted=%d",
     b"setRootTemplate dispatched (completion:nil)",
-    b"ON-SCREEN CONTENT: sectionCount=%lu dataSheets=%lu",
     b"dispatchRootTemplate on main thread, ok",
     b"WARN: dispatchRootTemplate on NON-MAIN thread",
     b"watchdog round=%lu: framework confirms root, push sections",
@@ -83,6 +78,14 @@ BINARY_MARKERS = [
     b"both factory candidates missing",
     b"NO_SECTIONCOUNT_API",
     b"ON-SCREEN CONTENT: sectionCount=%lu hasAPI=%d dataSheets=%lu",
+    b"ON-SCREEN CONTENT: sectionCount=%lu hasAPI=%d dataSheets=%lu appliedBefore=%d sameAsRoot=%d verdict=%s",
+    b"updateSections done root.sectionCount=%lu (probe=%d) pushed=%lu sheetsReceived=%d applied=%d",
+    b"CPNowPlayingTemplate: both factory candidates missing",
+    b"one-shot root install armed controller=%p (EMPTY template",
+    b"fresh EMPTY template=%p, no sections yet",
+    b"emptyViewTitleVariants set on root template",
+    b"emptyViewTitleVariants NOT available on CPListTemplate",
+    b"ROOT TEMPLATE VISIBLE -> applied=1, about to refresh",
 ]
 
 # 旧版已证伪/致命的标记，产物里绝不能再出现
