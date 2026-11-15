@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142646"
+EXPECTED_VERSION = "11142647"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -92,6 +92,7 @@ BINARY_MARKERS = [
     b"SCENE willConnect: WINDOW PATH ACTIVE",
     b"SCENE willConnect: WINDOW PATH ACTIVE window=%p frame=%@ ",
     b"sheets=%lu rendered=%lu",
+    b"not a UIWindowScene (%@)",
 ]
 
 # 旧版已证伪/致命的标记，产物里绝不能再出现
@@ -178,7 +179,8 @@ def main():
         manifest = info.get("UIApplicationSceneManifest") or {}
         cfgs = manifest.get("UISceneConfigurations") or {}
         main_role = cfgs.get("UIWindowSceneSessionRoleApplication") or [{}]
-        car_role = cfgs.get("CPTemplateApplicationSceneSessionRoleApplication") or [{}]
+        # 11142646：模板 role 已移除，CarPlay 入口改为 UIWindowSceneSessionRoleCarPlay
+        car_role = cfgs.get("UIWindowSceneSessionRoleCarPlay") or [{}]
         main_delegate = main_role[0].get("UISceneDelegateClassName", "")
         car_delegate = car_role[0].get("UISceneDelegateClassName", "")
         print(f"MainDelegate={main_delegate}")
@@ -211,7 +213,17 @@ def main():
         if missing_js:
             fail("JS markers missing: " + ", ".join(missing_js))
 
-    print("ARTIFACT_OK")
+        # 11142646：CarPlay 图标资源必须打进 bundle（CarMovie 同款命名）
+    icon_missing = []
+    for _ic in ("CarPlayIcon120x120.png", "CarPlayIcon180x180.png"):
+        if not any(n.endswith(_ic) for n in names):
+            icon_missing.append(_ic)
+    if icon_missing:
+        fail("CarPlay icon missing in bundle: " + ", ".join(icon_missing))
+    else:
+        print("CarPlayIcons=2/2")
+
+print("ARTIFACT_OK")
 
 
 if __name__ == "__main__":

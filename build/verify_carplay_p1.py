@@ -398,6 +398,21 @@ chk("CarPlayIcon120x120.png 存在",
 chk("CarPlayIcon180x180.png 存在",
     os.path.exists(os.path.join(ROOT, "ios", "MusicFree", "CarPlayIcon180x180.png")))
 
+# 11142646 构建后发现的真实问题：
+# CarPlayIcon*.png 推送到了仓库，但**没有在 pbxproj 里注册**，
+# 所以 xcodebuild 不会把它们复制进 .app bundle，产物里缺失。
+# 这会导致 SBStarkCapable 路径下车机没有图标可用。
+_pbx = io.open(os.path.join(ROOT, "ios", "MusicFree.xcodeproj", "project.pbxproj"),
+               encoding="utf-8").read()
+chk("CarPlayIcon120x120 在 pbxproj 注册（PBXBuildFile）",
+    "CarPlayIcon120x120.png in Resources" in _pbx)
+chk("CarPlayIcon180x180 在 pbxproj 注册（PBXBuildFile）",
+    "CarPlayIcon180x180.png in Resources" in _pbx)
+chk("CarPlayIcon120x120 有 PBXFileReference",
+    'name = "CarPlayIcon120x120.png"' in _pbx)
+chk("CarPlayIcon180x180 有 PBXFileReference",
+    'name = "CarPlayIcon180x180.png"' in _pbx)
+
 print("=" * 50)
 print("Phase 1 static check:", "ALL PASS" if ok else "FAILED")
 sys.exit(0 if ok else 1)
