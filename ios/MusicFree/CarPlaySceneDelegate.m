@@ -126,6 +126,8 @@ static id<NSObject> sDataObserverToken = nil;
 - (void)registerWindowDataObserver;
 - (NSArray<NSDictionary *> *)historyForCarPlay;
 - (NSArray<NSDictionary *> *)searchForCarPlay:(NSString *)query;
+- (NSDictionary *)nowPlayingForCarPlay;
+- (NSArray<NSDictionary *> *)playQueueForCarPlay;
 - (void)attachInterfaceController:(CPInterfaceController *)interfaceController
                             scene:(CPTemplateApplicationScene *)scene;
 - (void)registerDataObserverIfNeeded;
@@ -179,6 +181,7 @@ static id<NSObject> sDataObserverToken = nil;
 @end
 
 @interface MFCarPlayWindowTracksVC : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@property (nonatomic, weak) MFCarPlaySceneDelegate *carPlayDelegate;
 @property (nonatomic, copy) NSString *sheetId;
 @property (nonatomic, copy) NSString *sheetTitle;
 @property (nonatomic, strong) UITableView *table;
@@ -198,6 +201,24 @@ static id<NSObject> sDataObserverToken = nil;
 @property (nonatomic, strong) UITableView *table;
 @property (nonatomic, strong) UITextField *field;
 @property (nonatomic, strong) NSArray<NSDictionary *> *results;
+@end
+
+/* 11142650：播放页（静态版）—— 点歌后跳到这里 */
+@interface MFCarPlayWindowNowPlayingVC : UIViewController
+@property (nonatomic, weak) MFCarPlaySceneDelegate *carPlayDelegate;
+@property (nonatomic, strong) NSDictionary *nowPlaying;
+/* 子控件 */
+@property (nonatomic, strong) UIImageView *coverView;
+@property (nonatomic, strong) UILabel *titleLabel;
+@property (nonatomic, strong) UILabel *artistLabel;
+@property (nonatomic, strong) UILabel *timeLabel;
+@end
+
+/* 11142650：播放列表页 */
+@interface MFCarPlayWindowPlayQueueVC : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@property (nonatomic, weak) MFCarPlaySceneDelegate *carPlayDelegate;
+@property (nonatomic, strong) UITableView *table;
+@property (nonatomic, strong) NSArray<NSDictionary *> *queue;
 @end
 
 @implementation MFCarPlayWindowRootVC
@@ -306,6 +327,7 @@ static id<NSObject> sDataObserverToken = nil;
     }
     if ([kind isEqualToString:@"history"]) {
         MFCarPlayWindowTracksVC *vc = [[MFCarPlayWindowTracksVC alloc] init];
+        vc.carPlayDelegate = self.carPlayDelegate;
         vc.sheetId = @"";
         vc.sheetTitle = @"最近播放";
         vc.tracks = [self.carPlayDelegate historyForCarPlay] ?: @[];
@@ -392,6 +414,11 @@ static id<NSObject> sDataObserverToken = nil;
      */
     [MFCarPlayBridge emitPlayTrack:tid sheetId:self.sheetId];
     MFCarPlayLogBoth(@"emitted CarPlayPlayTrack track=%@", tid);
+
+    /* 11142650：点击曲目后跳转到播放页 */
+    MFCarPlayWindowNowPlayingVC *np = [[MFCarPlayWindowNowPlayingVC alloc] init];
+    np.nowPlaying = [self.carPlayDelegate nowPlayingForCarPlay];
+    [self.navigationController pushViewController:np animated:YES];
 }
 
 @end
@@ -1091,6 +1118,15 @@ static id<NSObject> sDataObserverToken = nil;
 - (NSArray<NSDictionary *> *)searchForCarPlay:(NSString *)query {
     /* 11142649：本地歌单曲目搜索，原生遍历，不依赖 RN */
     return MFCarPlayNativeSearchTracks(query);
+}
+
+- (NSDictionary *)nowPlayingForCarPlay {
+    /* 11142650：当前播放，原生读 App.PersistStatus */
+    return MFCarPlayNativeNowPlaying();
+}
+
+- (NSArray<NSDictionary *> *)playQueueForCarPlay {
+    return MFCarPlayNativePlayQueue();
 }
 
 - (CPInterfaceController *)interfaceControllerFromScene:(UIScene *)scene {
@@ -2299,6 +2335,7 @@ static id<NSObject> sDataObserverToken = nil;
           (long)indexPath.row, sid, title);
 
     MFCarPlayWindowTracksVC *vc = [[MFCarPlayWindowTracksVC alloc] init];
+    vc.carPlayDelegate = self.carPlayDelegate;
     vc.sheetId = sid;
     vc.sheetTitle = title;
     vc.tracks = [self.carPlayDelegate tracksForSheet:sid] ?: @[];
@@ -2389,7 +2426,296 @@ static id<NSObject> sDataObserverToken = nil;
           (long)indexPath.row, tid, sid);
     [MFCarPlayBridge emitPlayTrack:tid sheetId:sid];
     MFCarPlayLogBoth(@"emitted CarPlayPlayTrack track=%@", tid);
+
+    MFCarPlayWindowNowPlayingVC *np = [[MFCarPlayWindowNowPlayingVC alloc] init];
+    np.carPlayDelegate = self.carPlayDelegate;
+    np.nowPlaying = [self.carPlayDelegate nowPlayingForCarPlay];
+    [self.navigationController pushViewController:np animated:YES];
+}
+
+
+#pragma mark - 11142650：播放页（静态版）
+
+/*
+ * 布局参考用户给的截图：
+ *
+ *   ← 返回                            播放列表
+ *
+ *              晴天
+ *              周杰伦
+ *              叶惠美
+ *
+ *            [ 封面封面封面 ]
+ *
+ *        ◀◀        ▶        ▶▶
+ *
+ *      0:01 ─────────●────── -0:59
+ *
+ * 静态版说明：
+ *   - 数据从 App.PersistStatus 读一次（打开页面时）
+ *   - 进度条显示的是**上次持久化的进度**，不会实时走
+ *   - 播放/暂停/上一首/下一首 通过 emitControl 通知 JS 执行
+ *   - 按钮点击后本页不刷新（等 JS 回传状态，那是下一轮的事）
+ */
+
+@end
+
+@implementation MFCarPlayWindowNowPlayingVC
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+
+    self.title = @"";
+    self.view.backgroundColor = [UIColor blackColor];
+
+    /* 右上角「播放列表」按钮 */
+    UIBarButtonItem *queueBtn = [[UIBarButtonItem alloc]
+        initWithTitle:@"播放列表" style:0 target:self action:@selector(onShowQueue)];
+    self.navigationItem.rightBarButtonItem = queueBtn;
+
+    NSDictionary *np = self.nowPlaying ?: [self.carPlayDelegate nowPlayingForCarPlay];
+    self.nowPlaying = np;
+
+    NSString *title = np[@"title"] ?: @"未知歌曲";
+    NSString *artist = np[@"artist"] ?: @"";
+    NSString *album = np[@"album"] ?: @"";
+    NSString *artwork = np[@"artwork"] ?: @"";
+
+    /* 歌手 + 专辑，例如「周杰伦 / 叶惠美」 */
+    NSString *subtitle = nil;
+    if (artist.length > 0 && album.length > 0) {
+        subtitle = [NSString stringWithFormat:@"%@ / %@", artist, album];
+    } else {
+        subtitle = artist.length > 0 ? artist : album;
+    }
+
+    /* 歌名 */
+    self.titleLabel = [[UILabel alloc] init];
+    self.titleLabel.text = title;
+    self.titleLabel.font = [UIFont systemFontOfSize:30.0];
+    self.titleLabel.textColor = [UIColor whiteColor];
+    self.titleLabel.textAlignment = NSTextAlignmentCenter;
+    self.titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.titleLabel];
+
+    /* 歌手/专辑 */
+    self.artistLabel = [[UILabel alloc] init];
+    self.artistLabel.text = subtitle;
+    self.artistLabel.font = [UIFont systemFontOfSize:20.0];
+    self.artistLabel.textColor = [UIColor whiteColor];
+    self.artistLabel.textAlignment = NSTextAlignmentCenter;
+    self.artistLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.artistLabel];
+
+    /* 封面 */
+    self.coverView = [[UIImageView alloc] init];
+    self.coverView.backgroundColor = [UIColor blackColor];
+    self.coverView.contentMode = UIViewContentModeScaleAspectFill;
+    self.coverView.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.coverView];
+
+    /* 异步下载封面（失败就不显示，不影响其他控件） */
+    if (artwork.length > 0) {
+        NSURL *url = [NSURL URLWithString:artwork];
+        if (url) {
+            __weak __typeof(self) weakSelf = self;
+            dispatch_async(dispatch_get_global_queue(0, 0), ^{
+                NSData *data = [NSData dataWithContentsOfURL:url];
+                UIImage *img = data ? [UIImage imageWithData:data] : nil;
+                if (!img) {
+                    return;
+                }
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    __strong __typeof(weakSelf) s = weakSelf;
+                    if (s) {
+                        s.coverView.image = img;
+                        MFCarPlayLogBoth(@"NOWPLAYING cover loaded %lu bytes",
+                              (unsigned long)data.length);
+                    }
+                });
+            });
+        }
+    }
+
+    /* 三个按钮：上一首 / 播放暂停 / 下一首 */
+    UIButton *prev = [self makeControlButton:@"◀◀" action:@selector(onPrev)];
+    UIButton *play = [self makeControlButton:@"▶"  action:@selector(onPlayPause)];
+    UIButton *next = [self makeControlButton:@"▶▶" action:@selector(onNext)];
+
+    /* 进度文字 */
+    double duration = [np[@"duration"] isKindOfClass:[NSNumber class]]
+        ? [np[@"duration"] doubleValue] : 0;
+    double progress = [np[@"progress"] isKindOfClass:[NSNumber class]]
+        ? [np[@"progress"] doubleValue] : 0;
+
+    self.timeLabel = [[UILabel alloc] init];
+    self.timeLabel.text = [NSString stringWithFormat:@"%@   /   %@",
+                           [self formatTime:progress], [self formatTime:duration]];
+    self.timeLabel.font = [UIFont systemFontOfSize:18.0];
+    self.timeLabel.textColor = [UIColor whiteColor];
+    self.timeLabel.textAlignment = NSTextAlignmentCenter;
+    self.timeLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.timeLabel];
+
+    /* 布局：1016 宽的车机屏幕，居中排布 */
+    UIView *v = self.view;
+    [NSLayoutConstraint activateConstraints:@[
+        /* 歌名 */
+        [self.titleLabel.topAnchor constraintEqualToAnchor:v.topAnchor constant:24],
+        [self.titleLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:24],
+        [self.titleLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-24],
+
+        /* 歌手 */
+        [self.artistLabel.topAnchor constraintEqualToAnchor:self.titleLabel.bottomAnchor constant:8],
+        [self.artistLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:24],
+        [self.artistLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-24],
+
+        /* 封面：居中，220x220 */
+        [self.coverView.topAnchor constraintEqualToAnchor:self.artistLabel.bottomAnchor constant:24],
+        [self.coverView.centerXAnchor constraintEqualToAnchor:v.centerXAnchor],
+        [self.coverView.widthAnchor constraintEqualToConstant:220],
+        [self.coverView.heightAnchor constraintEqualToConstant:220],
+
+        /* 上一首 / 播放 / 下一首：底部横排 */
+        [play.centerXAnchor constraintEqualToAnchor:v.centerXAnchor],
+        [play.topAnchor constraintEqualToAnchor:self.coverView.bottomAnchor constant:28],
+        [play.widthAnchor constraintEqualToConstant:120],
+        [play.heightAnchor constraintEqualToConstant:64],
+
+        [prev.trailingAnchor constraintEqualToAnchor:play.leadingAnchor constant:-24],
+        [prev.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
+        [prev.widthAnchor constraintEqualToConstant:110],
+        [prev.heightAnchor constraintEqualToConstant:64],
+
+        [next.leadingAnchor constraintEqualToAnchor:play.trailingAnchor constant:24],
+        [next.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
+        [next.widthAnchor constraintEqualToConstant:110],
+        [next.heightAnchor constraintEqualToConstant:64],
+
+        /* 时间 */
+        [self.timeLabel.topAnchor constraintEqualToAnchor:play.bottomAnchor constant:18],
+        [self.timeLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:24],
+        [self.timeLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-24],
+    ]];
+
+    MFCarPlayLogBoth(@"NOWPLAYING VC: title=%@ artist=%@ album=%@ duration=%.0f "
+                     @"progress=%.0f queue=%@ artwork=%@",
+          title, artist, album, duration, progress,
+          np[@"queueCount"] ?: @0,
+          artwork.length > 0 ? @"yes" : @"no");
+}
+
+- (UIButton *)makeControlButton:(NSString *)text action:(SEL)action {
+    UIButton *b = [UIButton buttonWithType:0];
+    [b setTitle:text forState:0];
+    [b setTitleColor:[UIColor whiteColor] forState:0];
+    b.titleLabel.font = [UIFont systemFontOfSize:26.0];
+    b.backgroundColor = [UIColor blackColor];
+    b.translatesAutoresizingMaskIntoConstraints = NO;
+    [b addTarget:self action:action forControlEvents:64];  /* touchUpInside */
+    [self.view addSubview:b];
+    return b;
+}
+
+- (NSString *)formatTime:(double)sec {
+    if (sec < 0 || sec != sec) {   /* NaN 保护 */
+        sec = 0;
+    }
+    int total = (int)sec;
+    int m = total / 60;
+    int s = total % 60;
+    return [NSString stringWithFormat:@"%d:%02d", m, s];
+}
+
+- (void)onPrev {
+    MFCarPlayLogBoth(@"NOWPLAYING tap PREV");
+    [MFCarPlayBridge emitControl:@"prev"];
+}
+
+- (void)onPlayPause {
+    MFCarPlayLogBoth(@"NOWPLAYING tap PLAY/PAUSE");
+    [MFCarPlayBridge emitControl:@"toggle"];
+}
+
+- (void)onNext {
+    MFCarPlayLogBoth(@"NOWPLAYING tap NEXT");
+    [MFCarPlayBridge emitControl:@"next"];
+}
+
+- (void)onShowQueue {
+    MFCarPlayLogBoth(@"NOWPLAYING tap PLAYQUEUE");
+    MFCarPlayWindowPlayQueueVC *q = [[MFCarPlayWindowPlayQueueVC alloc] init];
+    q.carPlayDelegate = self.carPlayDelegate;
+    [self.navigationController pushViewController:q animated:YES];
 }
 
 @end
+
+#pragma mark - 11142650：播放列表页
+
+@implementation MFCarPlayWindowPlayQueueVC
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"播放列表";
+    self.view.backgroundColor = [UIColor blackColor];
+
+    self.queue = [self.carPlayDelegate playQueueForCarPlay] ?: @[];
+
+    self.table = [[UITableView alloc] initWithFrame:self.view.bounds
+                                              style:UITableViewStylePlain];
+    self.table.dataSource = self;
+    self.table.delegate = self;
+    self.table.rowHeight = 60.0;
+    self.table.backgroundColor = [UIColor blackColor];
+    self.table.separatorColor = [UIColor whiteColor];
+    self.table.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.table];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [self.table.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [self.table.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [self.table.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.table.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+    ]];
+
+    MFCarPlayLogBoth(@"PLAYQUEUE VC: %lu tracks", (unsigned long)self.queue.count);
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return (NSInteger)self.queue.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView
+         cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *cid = @"q";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cid];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                      reuseIdentifier:cid];
+    }
+    if (indexPath.row < (NSInteger)self.queue.count) {
+        NSDictionary *tr = self.queue[(NSUInteger)indexPath.row];
+        cell.textLabel.text = tr[@"title"] ?: @"";
+        cell.textLabel.textColor = [UIColor whiteColor];
+        cell.textLabel.font = [UIFont systemFontOfSize:19.0];
+        cell.detailTextLabel.text = tr[@"artist"] ?: @"";
+        cell.detailTextLabel.textColor = [UIColor whiteColor];
+    }
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (indexPath.row >= (NSInteger)self.queue.count) {
+        return;
+    }
+    NSDictionary *tr = self.queue[(NSUInteger)indexPath.row];
+    NSString *tid = tr[@"id"] ?: @"";
+    MFCarPlayLogBoth(@"PLAYQUEUE tap row=%ld track=%@", (long)indexPath.row, tid);
+    [MFCarPlayBridge emitPlayTrack:tid sheetId:@""];
+}
+
+@end
+
 

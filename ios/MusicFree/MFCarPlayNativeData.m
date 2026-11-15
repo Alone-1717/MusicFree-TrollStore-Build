@@ -367,6 +367,143 @@ NSArray<NSDictionary *> *MFCarPlayNativeSearchTracks(NSString *query) {
     }
 }
 
+#pragma mark - 11142650：当前播放状态 + 播放队列
+
+/*
+ * 读 App.PersistStatus 里的单个值（非 JSON，直接是 MMKV 原生类型或字符串）。
+ */
+static NSString *MFReadPersistString(NSString *key) {
+#if MF_HAVE_MMKV
+    @try {
+        MMKV *kv = [MMKV mmkvWithID:@"App.PersistStatus"];
+        if (!kv) {
+            MFDiag(@"persist = nil");
+            return nil;
+        }
+        return [kv getStringForKey:key];
+    } @catch (NSException *e) {
+        MFDiag(@"persist(%@) threw: %@", key, e.reason);
+        return nil;
+    }
+#else
+    return nil;
+#endif
+}
+
+static double MFReadPersistDouble(NSString *key) {
+#if MF_HAVE_MMKV
+    @try {
+        MMKV *kv = [MMKV mmkvWithID:@"App.PersistStatus"];
+        if (!kv) {
+            return 0;
+        }
+        return [kv getDoubleForKey:key];
+    } @catch (NSException *e) {
+        return 0;
+    }
+#else
+    return 0;
+#endif
+}
+
+static id MFReadPersistJSON(NSString *key) {
+    NSString *raw = MFReadPersistString(key);
+    if (!raw || raw.length == 0) {
+        return nil;
+    }
+    NSData *d = [raw dataUsingEncoding:NSUTF8StringEncoding];
+    if (!d) {
+        return nil;
+    }
+    NSError *err = nil;
+    id obj = [NSJSONSerialization JSONObjectWithData:d options:0 error:&err];
+    if (!obj) {
+        MFDiag(@"persist(%@) parse failed: %@", key, err.localizedDescription);
+    }
+    return obj;
+}
+
+/*
+ * IMusicItem -> 车机 dict，含专辑/封面/时长。
+ */
+static NSDictionary *MFTrackFull(NSDictionary *d) {
+    NSDictionary *base = MFNormalizeTrack(d);
+    if (!base) {
+        return nil;
+    }
+    NSMutableDictionary *out = [base mutableCopy];
+
+    NSString *album = [d[@"album"] isKindOfClass:[NSString class]] ? d[@"album"] : @"";
+    out[@"album"] = album;
+
+    NSString *artwork = [d[@"artwork"] isKindOfClass:[NSString class]] ? d[@"artwork"] : @"";
+    out[@"artwork"] = artwork;
+
+    id dur = d[@"duration"];
+    out[@"duration"] = [dur isKindOfClass:[NSNumber class]] ? dur : @(0);
+
+    return out;
+}
+
+NSDictionary *MFCarPlayNativeNowPlaying(void) {
+    @try {
+        id raw = MFReadPersistJSON(@"music.musicItem");
+        if (![raw isKindOfClass:[NSDictionary class]]) {
+            MFDiag(@"nowPlaying: no current music (%@)",
+                   NSStringFromClass([raw class]));
+            return nil;
+        }
+        NSMutableDictionary *np = [MFTrackFull((NSDictionary *)raw) mutableCopy];
+        if (!np) {
+            return nil;
+        }
+
+        np[@"progress"] = @(MFReadPersistDouble(@"music.progress"));
+        np[@"rate"] = @(MFReadPersistDouble(@"music.rate"));
+
+        NSString *repeat = MFReadPersistString(@"music.repeatMode");
+        np[@"repeatMode"] = repeat ?: @"loop";
+
+        NSString *quality = MFReadPersistString(@"music.quality");
+        np[@"quality"] = quality ?: @"standard";
+
+        id queue = MFReadPersistJSON(@"music.playList");
+        np[@"queueCount"] = [queue isKindOfClass:[NSArray class]]
+            ? @([(NSArray *)queue count]) : @(0);
+
+        MFDiag(@"nowPlaying: %@ / %@ duration=%@ progress=%@ queue=%@",
+               np[@"title"], np[@"artist"], np[@"duration"],
+               np[@"progress"], np[@"queueCount"]);
+        return np;
+    } @catch (NSException *e) {
+        MFDiag(@"nowPlaying threw: %@", e.reason);
+        return nil;
+    }
+}
+
+NSArray<NSDictionary *> *MFCarPlayNativePlayQueue(void) {
+    @try {
+        id raw = MFReadPersistJSON(@"music.playList");
+        if (![raw isKindOfClass:[NSArray class]]) {
+            MFDiag(@"playQueue: not an array (%@)", NSStringFromClass([raw class]));
+            return @[];
+        }
+        NSArray *arr = (NSArray *)raw;
+        NSMutableArray<NSDictionary *> *out = [NSMutableArray array];
+        for (id item in arr) {
+            NSDictionary *n = MFTrackFull(item);
+            if (n) {
+                [out addObject:n];
+            }
+        }
+        MFDiag(@"playQueue total = %lu", (unsigned long)out.count);
+        return out;
+    } @catch (NSException *e) {
+        MFDiag(@"playQueue threw: %@", e.reason);
+        return @[];
+    }
+}
+
 NSString *MFCarPlayNativeDataDiagnosis(void) {
     if (!sDiag) {
         return @"(no diagnosis yet)";

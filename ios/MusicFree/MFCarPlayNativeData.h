@@ -53,6 +53,36 @@ NSArray<NSDictionary *> *MFCarPlayNativeHistory(NSUInteger limit);
  */
 NSArray<NSDictionary *> *MFCarPlayNativeSearchTracks(NSString *query);
 
+/*
+ * ============ 11142650：当前播放状态（静态播放页用）============
+ *
+ * 数据源：src/utils/persistStatus.ts
+ *   getOrCreateMMKV("App.PersistStatus")
+ *   当前曲目 key = "music.musicItem"   -> IMusic.IMusicItem
+ *   进度      key = "music.progress"   -> number（秒）
+ *   队列      key = "music.playList"   -> IMusic.IMusicItem[]
+ *   循环模式  key = "music.repeatMode" -> string
+ *   音质      key = "music.quality"    -> string
+ *   倍速      key = "music.rate"       -> number
+ *
+ * 返回 dict（无当前曲目时返回 nil）：
+ *   id / title / artist / album / artwork / platform
+ *   duration   NSNumber（秒，来自曲目 duration 字段，可能是 0）
+ *   progress   NSNumber（秒）
+ *   repeatMode NSString
+ *   quality    NSString
+ *   rate       NSNumber
+ *   queueCount NSNumber（播放队列长度）
+ */
+NSDictionary *MFCarPlayNativeNowPlaying(void);
+
+/*
+ * 播放队列（当前正在播放的列表），用于「播放列表」页。
+ * 返回 @[@{id,title,artist,album,artwork,platform}, ...]
+ */
+NSArray<NSDictionary *> *MFCarPlayNativePlayQueue(void);
+
+
 /* 数据来源诊断，写进日志便于判断到底读到没有 */
 NSString *MFCarPlayNativeDataDiagnosis(void);
 

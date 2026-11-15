@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142649"
+EXPECTED_VERSION = "11142650"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -106,6 +106,14 @@ BINARY_MARKERS = [
     b"SEARCH tap row=%ld track=%@ sheet=%@",
     b"history total = %lu (requested %lu)",
     b"search '%@' hits = %lu",
+    b"NOWPLAYING VC: title=%@ artist=%@ album=%@ duration=%.0f",
+    b"NOWPLAYING tap PREV",
+    b"NOWPLAYING tap PLAY/PAUSE",
+    b"NOWPLAYING tap NEXT",
+    b"NOWPLAYING tap PLAYQUEUE",
+    b"NOWPLAYING cover loaded %lu bytes",
+    b"PLAYQUEUE VC: %lu tracks",
+    b"PLAYQUEUE tap row=%ld track=%@",
 ]
 
 # 旧版已证伪/致命的标记，产物里绝不能再出现
