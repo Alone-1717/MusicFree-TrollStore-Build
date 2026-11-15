@@ -161,6 +161,32 @@ static id<NSObject> sDataObserverToken = nil;
 #pragma mark - 车机窗口 UI（11142648：可交互列表）
 
 /*
+ * 11142651：无边框返回按钮。
+ *
+ * 导航栏被全局隐藏后，子页面需要一个返回入口：
+ *   - 车机触摸屏的边缘滑动返回在部分车型上不触发
+ *   - 所以每个子页面左上角放一个轻量「←」，不占导航栏高度
+ *
+ * 只加在子页面（歌单/曲目/搜索/播放），主界面不需要。
+ */
+static void MFAddBackButton(UIViewController *vc) {
+    UIButton *b = [UIButton buttonWithType:0];
+    [b setTitle:@"\u2190" forState:0];
+    [b setTitleColor:[UIColor whiteColor] forState:0];
+    b.titleLabel.font = [UIFont systemFontOfSize:30.0];
+    b.translatesAutoresizingMaskIntoConstraints = NO;
+    [b addTarget:vc action:@selector(onBack) forControlEvents:64];
+    [vc.view addSubview:b];
+    [NSLayoutConstraint activateConstraints:@[
+        [b.topAnchor constraintEqualToAnchor:vc.view.topAnchor constant:10],
+        [b.leadingAnchor constraintEqualToAnchor:vc.view.leadingAnchor constant:14],
+        [b.widthAnchor constraintEqualToConstant:64],
+        [b.heightAnchor constraintEqualToConstant:48],
+    ]];
+}
+
+
+/*
  * 为什么用 UITableView 而不是 UILabel 堆叠：
  *   11142647 的手摆 UILabel 无法点击、也不会刷新。
  *   UITableView + delegate 同时解决交互和刷新两件事，
@@ -214,12 +240,6 @@ static id<NSObject> sDataObserverToken = nil;
 @property (nonatomic, strong) UILabel *timeLabel;
 @end
 
-/* 11142650：播放列表页 */
-@interface MFCarPlayWindowPlayQueueVC : UIViewController <UITableViewDataSource, UITableViewDelegate>
-@property (nonatomic, weak) MFCarPlaySceneDelegate *carPlayDelegate;
-@property (nonatomic, strong) UITableView *table;
-@property (nonatomic, strong) NSArray<NSDictionary *> *queue;
-@end
 
 @implementation MFCarPlayWindowRootVC
 
@@ -341,6 +361,7 @@ static id<NSObject> sDataObserverToken = nil;
 @implementation MFCarPlayWindowTracksVC
 
 - (void)viewDidLoad {
+    MFAddBackButton(self);
     [super viewDidLoad];
 
     self.title = self.sheetTitle ?: @"曲目";
@@ -419,6 +440,11 @@ static id<NSObject> sDataObserverToken = nil;
     MFCarPlayWindowNowPlayingVC *np = [[MFCarPlayWindowNowPlayingVC alloc] init];
     np.nowPlaying = [self.carPlayDelegate nowPlayingForCarPlay];
     [self.navigationController pushViewController:np animated:YES];
+}
+
+- (void)onBack {
+    MFCarPlayLogBoth(@"%@ tap BACK", @"MFCarPlayWindowTracksVC");
+    [self.navigationController popViewControllerAnimated:YES];
 }
 
 @end
@@ -1075,7 +1101,15 @@ static id<NSObject> sDataObserverToken = nil;
 
     UINavigationController *nav =
         [[UINavigationController alloc] initWithRootViewController:rootVC];
-    nav.navigationBar.hidden = NO;
+    /*
+     * 11142651：全局隐藏导航栏 —— 用户要求无边框。
+     * 主界面、歌单、曲目、搜索、播放页都靠 UINavigationController 承载，
+     * 但导航栏不显示，界面全屏沉浸。
+     *
+     * 返回方式：车机触摸屏支持边缘滑动返回（UINavigationController 默认行为），
+     * 且各列表页可点条目进入下一级，播放页为终点页，不需要返回按钮。
+     */
+    nav.navigationBar.hidden = YES;
 
     win.rootViewController = nav;
     [win makeKeyAndVisible];
@@ -2268,6 +2302,7 @@ static id<NSObject> sDataObserverToken = nil;
 @implementation MFCarPlayWindowSheetsVC
 
 - (void)viewDidLoad {
+    MFAddBackButton(self);
     [super viewDidLoad];
     self.title = @"歌单列表";
     self.view.backgroundColor = [UIColor blackColor];
@@ -2342,6 +2377,11 @@ static id<NSObject> sDataObserverToken = nil;
     [self.navigationController pushViewController:vc animated:YES];
 }
 
+- (void)onBack {
+    MFCarPlayLogBoth(@"%@ tap BACK", @"MFCarPlayWindowSheetsVC");
+    [self.navigationController popViewControllerAnimated:YES];
+}
+
 @end
 
 #pragma mark - 11142649：搜索页
@@ -2349,6 +2389,7 @@ static id<NSObject> sDataObserverToken = nil;
 @implementation MFCarPlayWindowSearchVC
 
 - (void)viewDidLoad {
+    MFAddBackButton(self);
     [super viewDidLoad];
     self.title = @"搜索";
     self.view.backgroundColor = [UIColor blackColor];
@@ -2458,20 +2499,28 @@ static id<NSObject> sDataObserverToken = nil;
  *   - 按钮点击后本页不刷新（等 JS 回传状态，那是下一轮的事）
  */
 
+- (void)onBack {
+    MFCarPlayLogBoth(@"%@ tap BACK", @"MFCarPlayWindowSearchVC");
+    [self.navigationController popViewControllerAnimated:YES];
+}
+
 @end
 
 @implementation MFCarPlayWindowNowPlayingVC
 
 - (void)viewDidLoad {
+    MFAddBackButton(self);
     [super viewDidLoad];
 
     self.title = @"";
     self.view.backgroundColor = [UIColor blackColor];
 
-    /* 右上角「播放列表」按钮 */
-    UIBarButtonItem *queueBtn = [[UIBarButtonItem alloc]
-        initWithTitle:@"播放列表" style:0 target:self action:@selector(onShowQueue)];
-    self.navigationItem.rightBarButtonItem = queueBtn;
+    /*
+     * 11142651：无边框播放页 —— 去掉导航栏，全屏沉浸。
+     * 用户要求顶部导航条去掉，返回通过系统手势/左上角（若有）处理。
+     * 这里不做 rightBarButtonItem（播放列表功能已移除）。
+     */
+    self.navigationController.navigationBar.hidden = YES;
 
     NSDictionary *np = self.nowPlaying ?: [self.carPlayDelegate nowPlayingForCarPlay];
     self.nowPlaying = np;
@@ -2642,80 +2691,14 @@ static id<NSObject> sDataObserverToken = nil;
     [MFCarPlayBridge emitControl:@"next"];
 }
 
-- (void)onShowQueue {
-    MFCarPlayLogBoth(@"NOWPLAYING tap PLAYQUEUE");
-    MFCarPlayWindowPlayQueueVC *q = [[MFCarPlayWindowPlayQueueVC alloc] init];
-    q.carPlayDelegate = self.carPlayDelegate;
-    [self.navigationController pushViewController:q animated:YES];
+
+- (void)onBack {
+    MFCarPlayLogBoth(@"%@ tap BACK", @"MFCarPlayWindowNowPlayingVC");
+    [self.navigationController popViewControllerAnimated:YES];
 }
 
 @end
 
-#pragma mark - 11142650：播放列表页
 
-@implementation MFCarPlayWindowPlayQueueVC
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    self.title = @"播放列表";
-    self.view.backgroundColor = [UIColor blackColor];
-
-    self.queue = [self.carPlayDelegate playQueueForCarPlay] ?: @[];
-
-    self.table = [[UITableView alloc] initWithFrame:self.view.bounds
-                                              style:UITableViewStylePlain];
-    self.table.dataSource = self;
-    self.table.delegate = self;
-    self.table.rowHeight = 60.0;
-    self.table.backgroundColor = [UIColor blackColor];
-    self.table.separatorColor = [UIColor whiteColor];
-    self.table.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.view addSubview:self.table];
-
-    [NSLayoutConstraint activateConstraints:@[
-        [self.table.topAnchor constraintEqualToAnchor:self.view.topAnchor],
-        [self.table.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-        [self.table.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [self.table.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-    ]];
-
-    MFCarPlayLogBoth(@"PLAYQUEUE VC: %lu tracks", (unsigned long)self.queue.count);
-}
-
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return (NSInteger)self.queue.count;
-}
-
-- (UITableViewCell *)tableView:(UITableView *)tableView
-         cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    static NSString *cid = @"q";
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cid];
-    if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
-                                      reuseIdentifier:cid];
-    }
-    if (indexPath.row < (NSInteger)self.queue.count) {
-        NSDictionary *tr = self.queue[(NSUInteger)indexPath.row];
-        cell.textLabel.text = tr[@"title"] ?: @"";
-        cell.textLabel.textColor = [UIColor whiteColor];
-        cell.textLabel.font = [UIFont systemFontOfSize:19.0];
-        cell.detailTextLabel.text = tr[@"artist"] ?: @"";
-        cell.detailTextLabel.textColor = [UIColor whiteColor];
-    }
-    return cell;
-}
-
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    if (indexPath.row >= (NSInteger)self.queue.count) {
-        return;
-    }
-    NSDictionary *tr = self.queue[(NSUInteger)indexPath.row];
-    NSString *tid = tr[@"id"] ?: @"";
-    MFCarPlayLogBoth(@"PLAYQUEUE tap row=%ld track=%@", (long)indexPath.row, tid);
-    [MFCarPlayBridge emitPlayTrack:tid sheetId:@""];
-}
-
-@end
 
 
