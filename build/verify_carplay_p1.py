@@ -176,7 +176,28 @@ chk("CarPlayBridge.m in Sources", "CarPlayBridge.m in Sources" in pbx)
 chk("CarPlaySceneDelegate.m in Sources", "CarPlaySceneDelegate.m in Sources" in pbx)
 defs = re.findall(r'^\s*([A-F0-9]{24}) /\*.*?\*/ = \{isa = ', pbx, re.M)
 dup = [k for k, v in Counter(defs).items() if v > 1 and k.startswith("C4A9C9")]
-chk("新 UUID 定义唯一", len(dup) == 0, str(dup[:3]))
+chk("pbxproj 注册 MFCarPlayLog.m", "MFCarPlayLog.m in Sources" in pbx
+    and "MFCarPlayLog.h" in pbx and "MFCarPlayLog.m" in pbx)
+# --- 落盘日志：爱思抓不到 app NSLog，必须写沙盒文件 ---
+_lg_h = os.path.join(ROOT, "ios", "MusicFree", "MFCarPlayLog.h")
+_lg_m = os.path.join(ROOT, "ios", "MusicFree", "MFCarPlayLog.m")
+chk("MFCarPlayLog 文件存在", os.path.isfile(_lg_h) and os.path.isfile(_lg_m))
+if os.path.isfile(_lg_m):
+    _lgt = io.open(_lg_m, encoding="utf-8").read()
+    chk("日志写 Documents/carplay.log",
+        "NSSearchPathForDirectoriesInDomains(NSDocumentDirectory" in _lgt
+        and "carplay.log" in _lgt)
+    chk("日志双写（NSLog + 文件）",
+        "MFCarPlayLogBoth" in _lgt and "NSLog(@\"[MusicFree][CarPlay] %@\"" in _lgt)
+    chk("日志带构建号 header", "CFBundleVersion" in _lgt and "build      =" in _lgt)
+    chk("日志体积轮转", "kMFLogMaxBytes" in _lgt and "carplay.1.log" in _lgt)
+    chk("日志串行队列", "DISPATCH_QUEUE_SERIAL" in _lgt)
+chk("SceneDelegate 全部改用双写",
+    "MFCarPlayLogBoth(" in cm and "NSLog(@" not in cm)
+
+defs_list = re.findall(r'^\s*([A-F0-9]{24}) /\*.*?\*/ = \{isa = ', pbx, re.M)
+dup2 = [k for k, v in Counter(defs_list).items() if v > 1 and k.startswith("C4A9C9")]
+chk("新 UUID 定义唯一", len(dup2) == 0, str(dup2[:3]))
 
 # 4) JS 层
 js = io.open(os.path.join(ROOT, "src", "core", "carPlay", "index.ts"), encoding="utf-8").read()
@@ -201,6 +222,7 @@ chk("bootstrap 调 setupCarPlay()", "setupCarPlay()" in bs)
 
 # 7) 方案 F 仍保持（主 App 不黑屏）
 pl = plistlib.load(open(os.path.join(ROOT, "ios", "MusicFree", "Info.plist"), "rb"))
+chk("Info.plist 允许文件共享（沙盒 Documents 可见）", pl.get("UIFileSharingEnabled") is True and pl.get("LSSupportsOpeningDocumentsInPlace") is True)
 cfgs = (pl.get("UIApplicationSceneManifest") or {}).get("UISceneConfigurations", {})
 w = cfgs.get("UIWindowSceneSessionRoleApplication", [{}])
 c = cfgs.get("CPTemplateApplicationSceneSessionRoleApplication", [{}])

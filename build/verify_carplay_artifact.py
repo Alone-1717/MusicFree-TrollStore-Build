@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142617"
+EXPECTED_VERSION = "11142618"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -27,13 +27,18 @@ BINARY_MARKERS = [
     b"no retry (waiting framework)",
     b"keep root, no reinstall",
     b"framework confirms root is top",
-    b"keep polling (no reinstall)",
+    b"applied=0 inFlight=",
     b"sync probe unlocked",
+    b"carplay.1.log",
+    b"MusicFree CarPlay log ",
+    b"initial install still settling, wait",
     b"template handshake not settled yet",
     b"rearm #%lu/%lu",
     b"silently failed",
     b"rearm exhausted",
     b"threw on stale controller",
+    b"controller invalidated, stop polling",
+    b"controller already invalidated, no more attempts",
     b"stale completion dropped",
     b"rearm succeeded, repush sections to fresh template",
     b"initial root succeeded, push sections",

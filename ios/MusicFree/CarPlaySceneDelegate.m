@@ -74,6 +74,7 @@
  */
 #import "CarPlaySceneDelegate.h"
 #import "CarPlayBridge.h"
+#import "MFCarPlayLog.h"
 
 static NSString *const kMFCarPlayDataDidUpdate = @"MFCarPlayDataDidUpdate";
 
@@ -183,7 +184,7 @@ static id<NSObject> sDataObserverToken = nil;
 - (void)templateApplicationScene:(CPTemplateApplicationScene *)templateApplicationScene
     didDisconnectInterfaceController:(CPInterfaceController *)interfaceController
 {
-    NSLog(@"[MusicFree][CarPlay] disconnected controller=%p", (__bridge void *)interfaceController);
+    MFCarPlayLogBoth(@"disconnected controller=%p", (__bridge void *)interfaceController);
     [self unregisterDataObserver];
     if (sActiveDelegate == self) {
         sActiveDelegate = nil;
@@ -233,7 +234,7 @@ static id<NSObject> sDataObserverToken = nil;
      * 11142615 日志里两次都打印同一个地址 0x2818352c0，需要能在新日志中直接判定
      * 是系统复用同一对象（same=1），还是没覆盖（此时新旧应不同却没换）。
      */
-    NSLog(@"[MusicFree][CarPlay] didConnect ctrl new=%p old=%p same=%d",
+    MFCarPlayLogBoth(@"didConnect ctrl new=%p old=%p same=%d",
           (__bridge void *)interfaceController,
           (__bridge void *)previous,
           (previous == interfaceController));
@@ -262,7 +263,7 @@ static id<NSObject> sDataObserverToken = nil;
         _lastInstallAt = 0;
         _rootGeneration += 1;          /* 作废旧 controller 的在途 completion */
     }
-    NSLog(@"[MusicFree][CarPlay] connected (phase1) controller=%p installedFor=%p applied=%d ready=%d",
+    MFCarPlayLogBoth(@"connected (phase1) controller=%p installedFor=%p applied=%d ready=%d",
           (__bridge void *)interfaceController,
           (__bridge void *)_rootInstalledFor,
           _rootApplied,
@@ -321,7 +322,7 @@ static id<NSObject> sDataObserverToken = nil;
     CPInterfaceController *current = self.interfaceController;
 
     if (sceneIC && sceneIC != current) {
-        NSLog(@"[MusicFree][CarPlay] rebind controller (%@) old=%p new=%p",
+        MFCarPlayLogBoth(@"rebind controller (%@) old=%p new=%p",
               reason, (__bridge void *)current, (__bridge void *)sceneIC);
         self.interfaceController = sceneIC;
         sRootedController = nil;
@@ -351,7 +352,7 @@ static id<NSObject> sDataObserverToken = nil;
 
     /* 同一 controller：绝不重装 root，但每次生命周期都向框架核对一次是否已被接受 */
     BOOL confirmed = [self syncAppliedStateFromFramework];
-    NSLog(@"[MusicFree][CarPlay] lifecycle: keep root, no reinstall (%@) applied=%d confirmed=%d ready=%d",
+    MFCarPlayLogBoth(@"lifecycle: keep root, no reinstall (%@) applied=%d confirmed=%d ready=%d",
           reason, _rootApplied, confirmed, _templateReady);
     if (confirmed) {
         [self refreshRootSections];
@@ -368,7 +369,7 @@ static id<NSObject> sDataObserverToken = nil;
 
 - (void)sceneDidEnterBackground:(UIScene *)scene API_AVAILABLE(ios(13.0)) {
     /* 进入后台不拆 root，只记录；连接若被系统 invalidate，回前台会重新绑定 */
-    NSLog(@"[MusicFree][CarPlay] scene entered background, keep root applied=%d", _rootApplied);
+    MFCarPlayLogBoth(@"scene entered background, keep root applied=%d", _rootApplied);
 }
 
 /*
@@ -393,7 +394,7 @@ static id<NSObject> sDataObserverToken = nil;
                     [delegate handleDataUpdate:note];
                 }];
     _observerOwnedByMe = YES;
-    NSLog(@"[MusicFree][CarPlay] data observer registered");
+    MFCarPlayLogBoth(@"data observer registered");
 }
 
 - (void)unregisterDataObserver {
@@ -403,7 +404,7 @@ static id<NSObject> sDataObserverToken = nil;
     [[NSNotificationCenter defaultCenter] removeObserver:sDataObserverToken];
     sDataObserverToken = nil;
     _observerOwnedByMe = NO;
-    NSLog(@"[MusicFree][CarPlay] data observer removed");
+    MFCarPlayLogBoth(@"data observer removed");
 }
 
 #pragma mark - 数据读取（RN 可为空，绝不阻塞首屏）
@@ -492,7 +493,7 @@ static id<NSObject> sDataObserverToken = nil;
         return;
     }
     if (_rootExhausted) {
-        NSLog(@"[MusicFree][CarPlay] install skipped, rearm exhausted");
+        MFCarPlayLogBoth(@"install skipped, rearm exhausted");
         return;
     }
 
@@ -504,17 +505,17 @@ static id<NSObject> sDataObserverToken = nil;
          */
         if (_rootInstalledFor == ic) {
             if ([self syncAppliedStateFromFramework]) {
-                NSLog(@"[MusicFree][CarPlay] root already installed, updateSections only");
+                MFCarPlayLogBoth(@"root already installed, updateSections only");
                 [self refreshRootSections];
             } else {
-                NSLog(@"[MusicFree][CarPlay] root already set on this controller, no retry (waiting framework)");
+                MFCarPlayLogBoth(@"root already set on this controller, no retry (waiting framework)");
             }
             return;
         }
 
         /* 不变量 2：同一轮并发调用直接挡掉 */
         if (_rootInstallInFlight) {
-            NSLog(@"[MusicFree][CarPlay] root install in flight, skip duplicate");
+            MFCarPlayLogBoth(@"root install in flight, skip duplicate");
             return;
         }
     }
@@ -535,15 +536,15 @@ static id<NSObject> sDataObserverToken = nil;
     _rootList = list;
 
     if (allowRearm) {
-        NSLog(@"[MusicFree][CarPlay] rearm #%lu controller=%p (fresh template=%p)",
+        MFCarPlayLogBoth(@"rearm #%lu controller=%p (fresh template=%p)",
               (unsigned long)_rearmCount, (__bridge void *)ic, (__bridge void *)list);
     } else {
-        NSLog(@"[MusicFree][CarPlay] one-shot root install armed controller=%p",
+        MFCarPlayLogBoth(@"one-shot root install armed controller=%p",
               (__bridge void *)ic);
     }
 
     [self dispatchRootTemplate:list];
-    NSLog(@"[MusicFree][CarPlay] native placeholder root installed (animated=NO)");
+    MFCarPlayLogBoth(@"native placeholder root installed (animated=NO)");
 
     [self scheduleRootWatchdogForController:ic];
 }
@@ -591,11 +592,11 @@ static id<NSObject> sDataObserverToken = nil;
                       * 只留一条日志便于车机上识别竞态是否真的发生。
                       */
                      if (token != self->_rootGeneration) {
-                         NSLog(@"[MusicFree][CarPlay] stale completion dropped (gen %lu != %lu) success=%d",
+                         MFCarPlayLogBoth(@"stale completion dropped (gen %lu != %lu) success=%d",
                                (unsigned long)token, (unsigned long)self->_rootGeneration, success);
                          return;
                      }
-                     NSLog(@"[MusicFree][CarPlay] setRootTemplate success=%d error=%@ (gen=%lu rearm=%lu)",
+                     MFCarPlayLogBoth(@"setRootTemplate success=%d error=%@ (gen=%lu rearm=%lu)",
                            success, error.localizedDescription,
                            (unsigned long)token, (unsigned long)generationAtDispatch);
                      self->_rootInstallInFlight = NO;
@@ -630,14 +631,14 @@ static id<NSObject> sDataObserverToken = nil;
                           * 推给旧模板的数据已经随旧对象丢弃，必须显式再推一次，
                           * 否则车机上是"原生占位空列表"——不黑屏但没内容。
                           */
-                         NSLog(@"[MusicFree][CarPlay] rearm succeeded, repush sections to fresh template");
+                         MFCarPlayLogBoth(@"rearm succeeded, repush sections to fresh template");
                      } else {
-                         NSLog(@"[MusicFree][CarPlay] initial root succeeded, push sections");
+                         MFCarPlayLogBoth(@"initial root succeeded, push sections");
                      }
                      [self refreshRootSections];
                  }];
     } @catch (NSException *ex) {
-        NSLog(@"[MusicFree][CarPlay] setRootTemplate threw on stale controller: %@", ex.reason);
+        MFCarPlayLogBoth(@"setRootTemplate threw on stale controller: %@", ex.reason);
         _rootInstallInFlight = NO;
         _rearmPending = NO;
         /*
@@ -647,10 +648,10 @@ static id<NSObject> sDataObserverToken = nil;
          */
         if (_controllerInvalidated) {
             _rootExhausted = YES;
-            NSLog(@"[MusicFree][CarPlay] rearm exhausted: controller already invalidated, no more attempts");
+            MFCarPlayLogBoth(@"rearm exhausted: controller already invalidated, no more attempts");
         } else {
             _rearmCount += 1;
-            NSLog(@"[MusicFree][CarPlay] rearm #%lu threw: %@", (unsigned long)_rearmCount, ex.reason);
+            MFCarPlayLogBoth(@"rearm #%lu threw: %@", (unsigned long)_rearmCount, ex.reason);
         }
         return NO;
     }
@@ -689,7 +690,7 @@ static id<NSObject> sDataObserverToken = nil;
     CPTemplate *top = ic.topTemplate;
     if (_rootList && top == _rootList) {
         if (!_rootApplied) {
-            NSLog(@"[MusicFree][CarPlay] framework confirms root is top (completion lost), applied=1");
+            MFCarPlayLogBoth(@"framework confirms root is top (completion lost), applied=1");
         }
         _rootApplied = YES;
         _rootInstallInFlight = NO;
@@ -748,20 +749,20 @@ static id<NSObject> sDataObserverToken = nil;
         }
         if (!self->_templateReady) {
             self->_templateReady = YES;
-            NSLog(@"[MusicFree][CarPlay] watchdog round=%lu: sync probe unlocked (handshake settled)",
+            MFCarPlayLogBoth(@"watchdog round=%lu: sync probe unlocked (handshake settled)",
                   (unsigned long)round);
         }
 
         /* 2) 已确认成功 -> 推内容并结束 */
         if ([self syncAppliedStateFromFramework]) {
-            NSLog(@"[MusicFree][CarPlay] watchdog round=%lu: framework confirms root, push sections",
+            MFCarPlayLogBoth(@"watchdog round=%lu: framework confirms root, push sections",
                   (unsigned long)round);
             [self refreshRootSections];
             return;
         }
 
         BOOL timedOut = [self rootInstallTimedOut];
-        NSLog(@"[MusicFree][CarPlay] watchdog round=%lu: applied=0 inFlight=%d rearm=%lu pending=%d timedOut=%d invalid=%d",
+        MFCarPlayLogBoth(@"watchdog round=%lu: applied=0 inFlight=%d rearm=%lu pending=%d timedOut=%d invalid=%d",
               (unsigned long)round,
               self->_rootInstallInFlight,
               (unsigned long)self->_rearmCount,
@@ -778,7 +779,7 @@ static id<NSObject> sDataObserverToken = nil;
         if (self->_controllerInvalidated && !self->_rootApplied && !self->_rearmPending) {
             self->_rootExhausted = YES;
             self->_rootInstallInFlight = NO;
-            NSLog(@"[MusicFree][CarPlay] rearm exhausted: controller invalidated, stop polling (wait for reconnect)");
+            MFCarPlayLogBoth(@"rearm exhausted: controller invalidated, stop polling (wait for reconnect)");
             return;
         }
 
@@ -786,7 +787,7 @@ static id<NSObject> sDataObserverToken = nil;
         if (self->_rearmPending && timedOut && !self->_rootApplied) {
             self->_rearmPending = NO;
             self->_rootInstallInFlight = NO;
-            NSLog(@"[MusicFree][CarPlay] rearm #%lu silently failed (no completion in %.0fs)",
+            MFCarPlayLogBoth(@"rearm #%lu silently failed (no completion in %.0fs)",
                   (unsigned long)self->_rearmCount, kMFInstallSettleWindow);
         }
 
@@ -799,7 +800,7 @@ static id<NSObject> sDataObserverToken = nil;
                                 && self->_rootInstallInFlight
                                 && !timedOut);
         if (initialSettling) {
-            NSLog(@"[MusicFree][CarPlay] watchdog round=%lu: initial install still settling, wait",
+            MFCarPlayLogBoth(@"watchdog round=%lu: initial install still settling, wait",
                   (unsigned long)round);
             [self scheduleRootWatchdogForController:ic round:(round + 1)];
             return;
@@ -809,7 +810,7 @@ static id<NSObject> sDataObserverToken = nil;
         if (!self->_rootApplied && self->_rearmCount >= kMFMaxRearm && !self->_rearmPending && timedOut) {
             self->_rootExhausted = YES;
             self->_rootInstallInFlight = NO;
-            NSLog(@"[MusicFree][CarPlay] rearm exhausted after %lu attempts, stop polling (wait for system reconnect)",
+            MFCarPlayLogBoth(@"rearm exhausted after %lu attempts, stop polling (wait for system reconnect)",
                   (unsigned long)self->_rearmCount);
             return;
         }
@@ -820,7 +821,7 @@ static id<NSObject> sDataObserverToken = nil;
             self->_rearmCount += 1;
             self->_rearmPending = YES;
             self->_rootInstallInFlight = NO; /* 先清 inFlight，否则新调用会被挡 */
-            NSLog(@"[MusicFree][CarPlay] watchdog round=%lu: root not accepted, rearm #%lu/%lu",
+            MFCarPlayLogBoth(@"watchdog round=%lu: root not accepted, rearm #%lu/%lu",
                   (unsigned long)round,
                   (unsigned long)self->_rearmCount,
                   (unsigned long)kMFMaxRearm);
@@ -832,7 +833,7 @@ static id<NSObject> sDataObserverToken = nil;
         if (round >= kMFWatchdogRounds) {
             self->_rootExhausted = YES;
             self->_rootInstallInFlight = NO;
-            NSLog(@"[MusicFree][CarPlay] rearm exhausted at round cap (%lu), stop polling",
+            MFCarPlayLogBoth(@"rearm exhausted at round cap (%lu), stop polling",
                   (unsigned long)round);
             return;
         }
@@ -867,7 +868,7 @@ static id<NSObject> sDataObserverToken = nil;
     }
     NSArray<CPListSection *> *sections = [self currentRootSections];
     [_rootList updateSections:sections];
-    NSLog(@"[MusicFree][CarPlay] updateSections root sections=%lu sheetsReceived=%d",
+    MFCarPlayLogBoth(@"updateSections root sections=%lu sheetsReceived=%d",
           (unsigned long)sections.count, _sheetsReceived);
 }
 
@@ -880,7 +881,7 @@ static id<NSObject> sDataObserverToken = nil;
     }
     /* 握手未结算时不碰同步属性；root 都没确认时也不 push，避免脏栈 */
     if (!_templateReady) {
-        NSLog(@"[MusicFree][CarPlay] push ignored, template handshake not settled yet (sheet=%@)", sheetId);
+        MFCarPlayLogBoth(@"push ignored, template handshake not settled yet (sheet=%@)", sheetId);
         return;
     }
     [self syncAppliedStateFromFramework];
@@ -924,7 +925,7 @@ static id<NSObject> sDataObserverToken = nil;
         item.handler = ^(CPListItem * _Nonnull selectedItem, dispatch_block_t completion) {
             __strong __typeof(weakSelf) self = weakSelf;
             if (self) {
-                NSLog(@"[MusicFree][CarPlay] play track %@ in sheet %@", tid, sheetId);
+                MFCarPlayLogBoth(@"play track %@ in sheet %@", tid, sheetId);
                 [MFCarPlayBridge emitPlayTrack:tid sheetId:sheetId];
             }
             completion();
@@ -948,7 +949,7 @@ static id<NSObject> sDataObserverToken = nil;
         items = @[[[CPListItem alloc] initWithText:@"暂无歌曲" detailText:@""]];
     }
     [(CPListTemplate *)top updateSections:@[[[CPListSection alloc] initWithItems:items]]];
-    NSLog(@"[MusicFree][CarPlay] updateSections tracks=%lu sheet=%@",
+    MFCarPlayLogBoth(@"updateSections tracks=%lu sheet=%@",
           (unsigned long)items.count, _currentSheetId);
 }
 
@@ -968,14 +969,14 @@ static id<NSObject> sDataObserverToken = nil;
         }
     } else if ([kind isEqualToString:@"nowPlaying"]) {
         /* Phase 1 不重建任何模板，仅留日志，NowPlaying 由系统 MediaRemote 提供 */
-        NSLog(@"[MusicFree][CarPlay] nowPlaying updated");
+        MFCarPlayLogBoth(@"nowPlaying updated");
     }
 }
 
 #pragma mark - 冷启动 requestSheets 重发
 
 - (void)requestSheetsNow {
-    NSLog(@"[MusicFree][CarPlay] requestSheets");
+    MFCarPlayLogBoth(@"requestSheets");
     [MFCarPlayBridge emitControl:@"requestSheets"];
 }
 
@@ -988,7 +989,7 @@ static id<NSObject> sDataObserverToken = nil;
             if (!self || self->_sheetsReceived || !self.interfaceController) {
                 return;
             }
-            NSLog(@"[MusicFree][CarPlay] requestSheets retry %lu", (unsigned long)i);
+            MFCarPlayLogBoth(@"requestSheets retry %lu", (unsigned long)i);
             [MFCarPlayBridge emitControl:@"requestSheets"];
         });
     }
