@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142647"
+EXPECTED_VERSION = "11142648"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -93,6 +93,12 @@ BINARY_MARKERS = [
     b"SCENE willConnect: WINDOW PATH ACTIVE window=%p frame=%@ ",
     b"sheets=%lu rendered=%lu",
     b"not a UIWindowScene (%@)",
+    b"ROOT TABLE reload: %lu sheets",
+    b"ROOT TABLE tap row=%ld sheet=%@ title=%@",
+    b"TRACKS VC: sheet=%@ title=%@ tracks=%lu",
+    b"TRACKS tap row=%ld track=%@ sheet=%@",
+    b"emitted CarPlayPlayTrack track=%@",
+    b"WINDOW DATA UPDATE -> reload root table",
 ]
 
 # 旧版已证伪/致命的标记，产物里绝不能再出现

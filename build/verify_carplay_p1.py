@@ -369,8 +369,18 @@ chk("无 get-task-allow（避免 Developer Mode 强制）",
     "get-task-allow" not in _entd)
 chk("window 路径渲染真实歌单（用 [self sheets]）",
     "[self sheets]" in cm and "WINDOW PATH ACTIVE" in cm)
+# 11142648：改用 UITableView 后，字体走 cell.textLabel.font，
+# 用的是 systemFontOfSize（不再是 boldSystemFontOfSize）。
 chk("window 路径用 UIFont 排版",
-    "boldSystemFontOfSize" in cm)
+    "systemFontOfSize" in cm)
+chk("★ 用 UITableView 而非 UILabel 堆叠（可点击）",
+    "UITableView *table" in cm and "numberOfRowsInSection" in cm)
+chk("★ 实现 didSelectRowAtIndexPath（点击响应）",
+    "didSelectRowAtIndexPath" in cm)
+chk("★ 监听数据更新（解决必须重启才刷新）",
+    "kMFCarPlayDataDidUpdate" in cm and "reloadSheets" in cm)
+chk("★ 点击曲目通知 JS 播放",
+    "emitPlayTrack" in cm)
 chk("CI 推送列表包含 entitlements plist",
     "trollstore.entitlements.plist" in
     io.open(os.path.join(ROOT, "build", "ci_push_and_build.ps1"), encoding="utf-8").read())

@@ -117,7 +117,13 @@ static __weak CPInterfaceController *sRootedController = nil;
 static __weak MFCarPlaySceneDelegate *sActiveDelegate = nil;
 static id<NSObject> sDataObserverToken = nil;
 
+@class MFCarPlayWindowRootVC;
+
 @interface MFCarPlaySceneDelegate () <UISceneDelegate>
+/* 11142648：window 路径的根控制器与数据观察者 */
+@property (nonatomic, strong, nullable) MFCarPlayWindowRootVC *windowRootVC;
+@property (nonatomic, strong, nullable) id windowDataObserver;
+- (void)registerWindowDataObserver;
 - (void)attachInterfaceController:(CPInterfaceController *)interfaceController
                             scene:(CPTemplateApplicationScene *)scene;
 - (void)registerDataObserverIfNeeded;
@@ -146,6 +152,208 @@ static id<NSObject> sDataObserverToken = nil;
 - (void)handleDataUpdate:(NSNotification *)note;
 - (void)requestSheetsNow;
 - (void)scheduleRequestSheetsRetries;
+@end
+
+#pragma mark - 车机窗口 UI（11142648：可交互列表）
+
+/*
+ * 为什么用 UITableView 而不是 UILabel 堆叠：
+ *   11142647 的手摆 UILabel 无法点击、也不会刷新。
+ *   UITableView + delegate 同时解决交互和刷新两件事，
+ *   而且滚动、选中高亮、行高都由系统处理。
+ *
+ * 两个层级：
+ *   MFCarPlayWindowRootVC     歌单列表 -> 点击进入曲目列表
+ *   MFCarPlayWindowTracksVC   曲目列表 -> 点击播放
+ */
+
+@interface MFCarPlayWindowRootVC : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@property (nonatomic, weak) MFCarPlaySceneDelegate *carPlayDelegate;
+@property (nonatomic, strong) UITableView *table;
+@property (nonatomic, strong) NSArray<NSDictionary *> *sheets;
+- (void)reloadSheets;
+@end
+
+@interface MFCarPlayWindowTracksVC : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@property (nonatomic, copy) NSString *sheetId;
+@property (nonatomic, copy) NSString *sheetTitle;
+@property (nonatomic, strong) UITableView *table;
+@property (nonatomic, strong) NSArray<NSDictionary *> *tracks;
+@end
+
+@implementation MFCarPlayWindowRootVC
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+
+    self.title = @"MusicFree";
+    self.view.backgroundColor = [UIColor blackColor];
+
+    self.table = [[UITableView alloc] initWithFrame:self.view.bounds
+                                              style:UITableViewStylePlain];
+    self.table.dataSource = self;
+    self.table.delegate = self;
+    self.table.rowHeight = 60.0;
+    self.table.backgroundColor = [UIColor blackColor];
+    self.table.separatorColor = [UIColor whiteColor];
+    self.table.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.table];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [self.table.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [self.table.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [self.table.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.table.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+    ]];
+
+    [self reloadSheets];
+}
+
+- (void)reloadSheets {
+    NSArray<NSDictionary *> *s = nil;
+    if (self.carPlayDelegate) {
+        s = [self.carPlayDelegate sheets];
+    }
+    self.sheets = s ?: @[];
+    self.title = [NSString stringWithFormat:@"歌单 (%lu)",
+                  (unsigned long)self.sheets.count];
+    [self.table reloadData];
+    MFCarPlayLogBoth(@"ROOT TABLE reload: %lu sheets",
+          (unsigned long)self.sheets.count);
+}
+
+#pragma mark UITableViewDataSource
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return (NSInteger)self.sheets.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView
+         cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *cid = @"sheet";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cid];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                      reuseIdentifier:cid];
+    }
+    if (indexPath.row < (NSInteger)self.sheets.count) {
+        NSDictionary *s = self.sheets[(NSUInteger)indexPath.row];
+        NSString *name = [s[@"title"] isKindOfClass:[NSString class]]
+            ? s[@"title"] : @"未命名歌单";
+        id cnt = s[@"count"];
+        cell.textLabel.text = name;
+        cell.textLabel.textColor = [UIColor whiteColor];
+        cell.textLabel.font = [UIFont systemFontOfSize:20.0];
+        cell.detailTextLabel.text = [cnt isKindOfClass:[NSNumber class]]
+            ? [NSString stringWithFormat:@"%@ 首", cnt] : @"";
+        cell.detailTextLabel.textColor = [UIColor whiteColor];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    }
+    return cell;
+}
+
+#pragma mark UITableViewDelegate
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (indexPath.row >= (NSInteger)self.sheets.count) {
+        return;
+    }
+    NSDictionary *s = self.sheets[(NSUInteger)indexPath.row];
+    NSString *sid = [s[@"id"] isKindOfClass:[NSString class]] ? s[@"id"] : @"";
+    NSString *title = [s[@"title"] isKindOfClass:[NSString class]]
+        ? s[@"title"] : @"未命名歌单";
+
+    MFCarPlayLogBoth(@"ROOT TABLE tap row=%ld sheet=%@ title=%@",
+          (long)indexPath.row, sid, title);
+
+    MFCarPlayWindowTracksVC *vc = [[MFCarPlayWindowTracksVC alloc] init];
+    vc.sheetId = sid;
+    vc.sheetTitle = title;
+    vc.tracks = [self.carPlayDelegate tracksForSheet:sid] ?: @[];
+    [self.navigationController pushViewController:vc animated:YES];
+}
+
+@end
+
+@implementation MFCarPlayWindowTracksVC
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+
+    self.title = self.sheetTitle ?: @"曲目";
+    self.view.backgroundColor = [UIColor blackColor];
+
+    self.table = [[UITableView alloc] initWithFrame:self.view.bounds
+                                              style:UITableViewStylePlain];
+    self.table.dataSource = self;
+    self.table.delegate = self;
+    self.table.rowHeight = 60.0;
+    self.table.backgroundColor = [UIColor blackColor];
+    self.table.separatorColor = [UIColor whiteColor];
+    self.table.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.table];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [self.table.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [self.table.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [self.table.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.table.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+    ]];
+
+    MFCarPlayLogBoth(@"TRACKS VC: sheet=%@ title=%@ tracks=%lu",
+          self.sheetId, self.sheetTitle, (unsigned long)self.tracks.count);
+}
+
+#pragma mark UITableViewDataSource
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return (NSInteger)self.tracks.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView
+         cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *cid = @"track";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cid];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                      reuseIdentifier:cid];
+    }
+    if (indexPath.row < (NSInteger)self.tracks.count) {
+        NSDictionary *tr = self.tracks[(NSUInteger)indexPath.row];
+        NSString *tt = [tr[@"title"] isKindOfClass:[NSString class]]
+            ? tr[@"title"] : @"未知曲目";
+        NSString *ar = [tr[@"artist"] isKindOfClass:[NSString class]]
+            ? tr[@"artist"] : @"";
+        cell.textLabel.text = tt;
+        cell.textLabel.textColor = [UIColor whiteColor];
+        cell.textLabel.font = [UIFont systemFontOfSize:19.0];
+        cell.detailTextLabel.text = ar;
+        cell.detailTextLabel.textColor = [UIColor whiteColor];
+    }
+    return cell;
+}
+
+#pragma mark UITableViewDelegate
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (indexPath.row >= (NSInteger)self.tracks.count) {
+        return;
+    }
+    NSDictionary *tr = self.tracks[(NSUInteger)indexPath.row];
+    NSString *tid = [tr[@"id"] isKindOfClass:[NSString class]] ? tr[@"id"] : @"";
+    MFCarPlayLogBoth(@"TRACKS tap row=%ld track=%@ sheet=%@",
+          (long)indexPath.row, tid, self.sheetId);
+
+    /*
+     * 通知 JS 播放。RN 若未启动（车机冷启动常见），事件会先进队列，
+     * 主 App 打开后 carPlayJSReady 再冲刷。
+     */
+    [MFCarPlayBridge emitPlayTrack:tid sheetId:self.sheetId];
+    MFCarPlayLogBoth(@"emitted CarPlayPlayTrack track=%@", tid);
+}
+
 @end
 
 @implementation MFCarPlaySceneDelegate {
@@ -778,98 +986,61 @@ static id<NSObject> sDataObserverToken = nil;
     UIWindowScene *windowScene = (UIWindowScene *)scene;
 
     /*
-     * ============ 11142641：CarMovie 式自建窗口，画真实歌单界面 ============
+     * ============ 11142648：可交互的 UITableView 界面 ============
      *
-     * 本轮移除了 com.apple.developer.carplay-audio entitlement，
-     * 目的就是让 carplayd 不再把本 App 归为"正规音频 App"，
-     * 从而允许 UIWindowSceneSessionRoleCarPlay 生效、走 UIWindowScene 路径。
+     * 11142647 首次在车机跑通 window 路径（帧 1066.67x480），但两个问题：
+     *   1) 界面是手摆的 UILabel，**点击无反应**
+     *   2) 数据只在 willConnect 时读一次，**新增歌单必须重启主 App 才刷新**
      *
-     * CarMovie 的二进制实证（详见 entitlements 注释）：
-     *   - 0 次 CPInterfaceController / CPListTemplate / setRootTemplate
-     *   - 完整实现 UIWindowSceneDelegate + initWithWindowScene:
-     *   - 用 UIViewController 在自建窗口里画界面
+     * 本轮改为 UITableView + dataSource/delegate：
+     *   - 点击行 -> 进入下一级（歌单 -> 曲目）
+     *   - 监听 kMFCarPlayDataDidUpdate 通知，数据变化时 reloadData
+     *   - UINavigationController 承载层级，返回键由系统提供
      *
-     * 所以这里不再用 CPListTemplate（那条模板路径在 TrollScope 假签名下
-     * 被静默拒绝，十轮实测 templates 恒为 0），
-     * 改成用 UIKit 直接画：一个 UITableView 列出本地歌单。
-     *
-     * 数据仍来自原生 MMKV（MFCarPlayNativeSheets），同步读，安全。
+     * 注意：CarPlay 车机屏幕是横屏 1066x480，行高用 60 保证可点。
      */
     UIWindow *win = [[UIWindow alloc] initWithWindowScene:windowScene];
     self.carPlayWindow = win;
 
-    NSArray<NSDictionary *> *sheets = [self sheets];
+    MFCarPlayWindowRootVC *rootVC = [[MFCarPlayWindowRootVC alloc] init];
+    rootVC.carPlayDelegate = self;
+    self.windowRootVC = rootVC;
 
-    UIViewController *vc = [[UIViewController alloc] init];
-    vc.view.backgroundColor = [UIColor blackColor];
+    UINavigationController *nav =
+        [[UINavigationController alloc] initWithRootViewController:rootVC];
+    nav.navigationBar.hidden = NO;
 
-    UILabel *title = [[UILabel alloc] init];
-    title.text = (sheets.count > 0)
-        ? [NSString stringWithFormat:@"MusicFree · 歌单 (%lu)", (unsigned long)sheets.count]
-        : @"MusicFree · 暂无歌单";
-    title.font = [UIFont boldSystemFontOfSize:22.0];
-    title.textColor = [UIColor whiteColor];
-    title.translatesAutoresizingMaskIntoConstraints = NO;
-    [vc.view addSubview:title];
-
-    /*
-     * 歌单逐条渲染成 UILabel 行（不依赖 UITableView 的 dataSource 协议，
-     * 保持实现最小、无第三方依赖、也不引入 UITableViewCell 复用逻辑）。
-     */
-    NSMutableArray<UILabel *> *rows = [NSMutableArray array];
-    NSUInteger maxRows = MIN(sheets.count, (NSUInteger)8);
-    for (NSUInteger k = 0; k < maxRows; k++) {
-        NSDictionary *s = sheets[k];
-        NSString *name = [s[@"title"] isKindOfClass:[NSString class]] ? s[@"title"] : @"未命名歌单";
-        id cnt = s[@"count"];
-        NSString *line = [cnt isKindOfClass:[NSNumber class]]
-            ? [NSString stringWithFormat:@"%lu. %@  (%@ 首)", (unsigned long)(k + 1), name, cnt]
-            : [NSString stringWithFormat:@"%lu. %@", (unsigned long)(k + 1), name];
-
-        UILabel *row = [[UILabel alloc] init];
-        row.text = line;
-        row.font = [UIFont systemFontOfSize:18.0];
-        row.textColor = [UIColor whiteColor];
-        row.translatesAutoresizingMaskIntoConstraints = NO;
-        [vc.view addSubview:row];
-        [rows addObject:row];
-    }
-
-    if (rows.count == 0) {
-        UILabel *empty = [[UILabel alloc] init];
-        empty.text = @"请在手机端导入或创建歌单";
-        empty.font = [UIFont systemFontOfSize:18.0];
-        empty.textColor = [UIColor whiteColor];
-        empty.translatesAutoresizingMaskIntoConstraints = NO;
-        [vc.view addSubview:empty];
-        [rows addObject:empty];
-    }
-
-    /* 标题固定在顶部，行依次向下排 */
-    [NSLayoutConstraint activateConstraints:@[
-        [title.topAnchor constraintEqualToAnchor:vc.view.topAnchor constant:40],
-        [title.leadingAnchor constraintEqualToAnchor:vc.view.leadingAnchor constant:32],
-    ]];
-    UIView *prev = title;
-    for (UILabel *row in rows) {
-        [NSLayoutConstraint activateConstraints:@[
-            [row.topAnchor constraintEqualToAnchor:prev.bottomAnchor constant:18],
-            [row.leadingAnchor constraintEqualToAnchor:vc.view.leadingAnchor constant:32],
-            [row.trailingAnchor constraintLessThanOrEqualToAnchor:vc.view.trailingAnchor constant:-32],
-        ]];
-        prev = row;
-    }
-
-    win.rootViewController = vc;
+    win.rootViewController = nav;
     [win makeKeyAndVisible];
 
-    MFCarPlayLogBoth(@"SCENE willConnect: WINDOW PATH ACTIVE window=%p frame=%@ "
-                     @"sceneClass=%@ sheets=%lu rendered=%lu",
+    /* 数据变化时刷新（解决"必须重启才显示"的问题） */
+    [self registerWindowDataObserver];
+
+    MFCarPlayLogBoth(@"SCENE willConnect: WINDOW PATH ACTIVE window=%p "
+                     @"frame=%@ sceneClass=%@ sheets=%lu (TABLE UI)",
           (__bridge void *)win,
           NSStringFromCGRect(windowScene.coordinateSpace.bounds),
           sceneClass,
-          (unsigned long)sheets.count,
-          (unsigned long)rows.count);
+          (unsigned long)[[self sheets] count]);
+}
+
+- (void)registerWindowDataObserver {
+    if (self.windowDataObserver) {
+        return;
+    }
+    __weak __typeof(self) weakSelf = self;
+    self.windowDataObserver =
+        [[NSNotificationCenter defaultCenter] addObserverForName:kMFCarPlayDataDidUpdate
+                                                          object:nil
+                                                           queue:[NSOperationQueue mainQueue]
+                                                      usingBlock:^(NSNotification *note) {
+        __strong __typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) {
+            return;
+        }
+        MFCarPlayLogBoth(@"WINDOW DATA UPDATE -> reload root table");
+        [strongSelf.windowRootVC reloadSheets];
+    }];
 }
 
 - (CPInterfaceController *)interfaceControllerFromScene:(UIScene *)scene {
