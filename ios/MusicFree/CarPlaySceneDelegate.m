@@ -243,47 +243,46 @@ static id<NSObject> sDataObserverToken = nil;
           (__bridge void *)template, isList, isSameObject, animated, _rootApplied);
 
     /*
-     * 补上屏内容证据（评审指出的盲区）：
+     * 上屏内容证据（评审 ②）。
+     *
+     * 为什么需要：
      *   "one-shot armed (sections=K)" 和 "refresh: data ready sections=K"
-     *   只能证明**我自己读到的数据两次一致**，证明不了模板真的带着 K 个
-     *   section 送到了车机。
+     *   只能证明**我自己读到的数据两次一致**，证明不了模板真的把内容送到了车机。
      *
-     * 这里在模板刚上屏时，反过来问模板对象**它自己现在持有几个 section / item**。
-     * 对照关系：
-     *   onScreenSections > 0 且 onScreenItems > 0  -> 模板内容正确，若车机还空，
-     *                                                  问题在渲染端不在数据端
-     *   onScreenSections > 0 但 onScreenItems == 0 -> CPListItem 构造有问题
-     *   onScreenSections == 0                      -> 首屏建模板时 sections 就是空的
+     * 用**公开只读属性** sectionCount —— 不是 KVC。
+     * KVC 读私有 ivar 在模板对象上属于未定义行为，而且 sections 即使能读到，
+     * 返回的也只是我传进去的那个数组，信息量不比 sectionCount 多。
      *
-     * CPListTemplate 没有公开的 sections 读取属性，用 KVC 兜住（失败不影响流程）。
+     * 判据边界（重要）：
+     *   sectionCount 是**分组数，不是条目数**。
+     *   本项目 currentRootSections 永远返回 1 个 section 装 N 个 item，
+     *   所以 sectionCount 只能是 0 或 1；条目数另外累加 items。
+     *
+     *   sectionCount == 0 + 车机空  -> 建模板时 sections 就是空的，
+     *                                  回查 [native-data] sheets total
+     *   sectionCount  > 0 + 车机空  -> 数据进了模板，问题在
+     *                                  CPListSection/CPListItem 构造（text 为空、
+     *                                  item 未设 handler、初始化参数错）或框架渲染
      */
     if (isSameObject && _rootList) {
-        NSUInteger onScreenSections = 0;
-        NSUInteger onScreenItems = 0;
-        @try {
-            id secs = [_rootList valueForKey:@"sections"];
-            if ([secs isKindOfClass:[NSArray class]]) {
-                onScreenSections = [(NSArray *)secs count];
-                for (id s in (NSArray *)secs) {
-                    id items = nil;
-                    @try { items = [s valueForKey:@"items"]; } @catch (NSException *e) { (void)e; }
-                    if ([items isKindOfClass:[NSArray class]]) {
-                        onScreenItems += [(NSArray *)items count];
-                    }
+        NSUInteger secCount = _rootList.sectionCount;
+        NSUInteger itemCount = 0;
+        NSArray<CPListSection *> *secs = _rootList.sections;
+        if ([secs isKindOfClass:[NSArray class]]) {
+            for (CPListSection *s in secs) {
+                if ([s respondsToSelector:@selector(items)]) {
+                    itemCount += s.items.count;
                 }
             }
-        } @catch (NSException *e) {
-            MFCarPlayLogBoth(@"onScreen probe threw: %@", e.reason);
         }
-        MFCarPlayLogBoth(@"ON-SCREEN CONTENT: sections=%lu items=%lu (template=%p)",
-              (unsigned long)onScreenSections, (unsigned long)onScreenItems,
-              (__bridge void *)_rootList);
-        if (onScreenSections == 0) {
-            MFCarPlayLogBoth(@"WARN: template on screen but ZERO sections — "
-                             @"first-frame template was built empty");
-        } else if (onScreenItems == 0) {
-            MFCarPlayLogBoth(@"WARN: sections present but ZERO items — "
-                             @"check CPListItem construction");
+        MFCarPlayLogBoth(@"ON-SCREEN CONTENT: sectionCount=%lu items=%lu appliedBefore=%d",
+              (unsigned long)secCount, (unsigned long)itemCount, _rootApplied);
+        if (secCount == 0) {
+            MFCarPlayLogBoth(@"WARN: template on screen but sectionCount==0 — "
+                             @"first-frame template was built empty; check [native-data] sheets total");
+        } else if (itemCount == 0) {
+            MFCarPlayLogBoth(@"WARN: sectionCount>0 but items==0 — "
+                             @"check CPListItem construction (text/handler)");
         }
     }
 
@@ -472,6 +471,18 @@ static id<NSObject> sDataObserverToken = nil;
         return nil;
     }
     id ic = nil;
+    /*
+     * 全文件唯一保留的 KVC。
+     *
+     * 原因：CPTemplateApplicationScene **没有公开的 interfaceController 属性**
+     * （公开面只有 CPTemplateApplicationScene.session / delegate 之类），
+     * 而 scene 生命周期回调里需要拿它做"是否换了 controller"的判断。
+     * 官方推荐的获取渠道是 didConnectInterfaceController: 参数，那条路已经走了；
+     * 这里只是被动重绑时的兜底，取不到就返回 nil（调用方会跳过，不会崩）。
+     *
+     * 其余所有属性访问都已改为公开 API（CPListTemplate.sectionCount/.sections、
+     * CPListSection.items、CPListItem.text/.detailText）。
+     */
     @try {
         ic = [(CPTemplateApplicationScene *)scene valueForKey:@"interfaceController"];
     } @catch (NSException *e) {
@@ -953,8 +964,16 @@ static id<NSObject> sDataObserverToken = nil;
         _rootApplied = YES;
         _rootInstallInFlight = NO;
         if (firstConfirm) {
-            MFCarPlayLogBoth(@"SYNC CONFIRM: topTemplate IS our root (applied=1) — "
-                             @"framework accepted it, completion never returned");
+            /*
+             * 措辞按评审意见改为客观描述。
+             *
+             * 逻辑上 "completion 没回调过" 是成立的：本方法只在 !_rootApplied
+             * 时才打这条，而 _rootApplied 唯一由 completion success 置位，
+             * 所以进到这里必然意味着 completion 尚未成功回调。
+             * 但日志写"观测到什么"比写"推断出什么"更稳，也避免和
+             * refreshRootSections 外层重复同一断言。
+             */
+            MFCarPlayLogBoth(@"SYNC CONFIRM: topTemplate IS our root (via top-template check) applied=1");
         }
         return YES;
     }
@@ -1176,37 +1195,45 @@ static id<NSObject> sDataObserverToken = nil;
     _lastPushedFingerprint = fingerprint;
 
     [_rootList updateSections:sections];
-    MFCarPlayLogBoth(@"updateSections root sections=%lu sheetsReceived=%d applied=%d",
-          (unsigned long)sections.count, _sheetsReceived, _rootApplied);
+    /*
+     * 第三个采样点（评审建议）：推完之后再问一次模板自己。
+     * 三点对照（建模板后 / templateDidAppear 时 / updateSections 后）可以区分：
+     *   - 建的时候有、上屏时没了      -> 框架侧丢弃，查 entitlement / 模板类型
+     *   - 上屏时有、推的时候覆盖成空  -> currentRootSections 在这次调用返回空，
+     *                                    查数据层（MMKV / 桥接竞争）
+     */
+    MFCarPlayLogBoth(@"updateSections done root.sectionCount=%lu pushed=%lu sheetsReceived=%d applied=%d",
+          (unsigned long)_rootList.sectionCount,
+          (unsigned long)sections.count,
+          _sheetsReceived, _rootApplied);
 }
 
 /*
  * sections 内容指纹：只取"用户可见的文字"，不取对象地址。
  * 覆盖标题 + 副标题 + 每个 section 的 item 数。
  * 歌单增删改、数量变化都会改变指纹，从而允许重推。
+ *
+ * 全部走**公开只读属性**（CPListSection.items / CPListItem.text /
+ * CPListItem.detailText），不用 KVC —— KVC 读私有 ivar 是未定义行为。
+ * 仍然保留 respondsToSelector 防御，避免 SDK 版本差异导致 unrecognized selector。
  */
 - (NSString *)sectionsFingerprint:(NSArray<CPListSection *> *)sections {
     NSMutableString *buf = [NSMutableString string];
     for (CPListSection *sec in sections) {
-        NSArray *items = nil;
-        @try {
-            /* CPListSection 没有公开的 items 读取接口，借 KVC 拿；
-               拿不到就退化为按 section 计数，仍能挡住大部分重复。 */
-            items = [sec valueForKey:@"items"];
-        } @catch (NSException *e) {
-            (void)e;
-            items = nil;
+        NSArray<CPListItem *> *items = nil;
+        if ([sec respondsToSelector:@selector(items)]) {
+            items = sec.items;
         }
         [buf appendFormat:@"[%lu]", (unsigned long)([items isKindOfClass:[NSArray class]] ? items.count : 0)];
         if ([items isKindOfClass:[NSArray class]]) {
-            for (id it in (NSArray *)items) {
+            for (CPListItem *it in items) {
                 NSString *t = nil;
                 NSString *d = nil;
-                @try {
-                    t = [it valueForKey:@"text"];
-                    d = [it valueForKey:@"detailText"];
-                } @catch (NSException *e) {
-                    (void)e;
+                if ([it respondsToSelector:@selector(text)]) {
+                    t = it.text;
+                }
+                if ([it respondsToSelector:@selector(detailText)]) {
+                    d = it.detailText;
                 }
                 [buf appendFormat:@"(%@|%@)", t ?: @"", d ?: @""];
             }

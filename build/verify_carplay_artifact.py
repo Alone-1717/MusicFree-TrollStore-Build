@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142627"
+EXPECTED_VERSION = "11142628"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -45,8 +45,12 @@ BINARY_MARKERS = [
     b"rearm succeeded, repush sections to fresh template",
     b"initial root succeeded, push sections",
     b"didConnect ctrl new=%p old=%p same=%d",
-    b"SYNC CONFIRM: topTemplate IS our root",
-    b"ON-SCREEN CONTENT: sections=",
+    b"SYNC CONFIRM: topTemplate IS our root (via top-template check)",
+    b"ON-SCREEN CONTENT: sectionCount=",
+    b"updateSections done root.sectionCount=",
+    b"sectionCount==0",
+    b"sectionCount>0 but items==0",
+
     b"applied via sync-confirm path",
     b"template on screen but ZERO sections",
 
