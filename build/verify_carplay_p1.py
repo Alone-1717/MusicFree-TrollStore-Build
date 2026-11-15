@@ -227,7 +227,7 @@ pl = plistlib.load(open(os.path.join(ROOT, "ios", "MusicFree", "Info.plist"), "r
 chk("Info.plist 允许文件共享（沙盒 Documents 可见）", pl.get("UIFileSharingEnabled") is True and pl.get("LSSupportsOpeningDocumentsInPlace") is True)
 cfgs = (pl.get("UIApplicationSceneManifest") or {}).get("UISceneConfigurations", {})
 w = cfgs.get("UIWindowSceneSessionRoleApplication", [{}])
-c = cfgs.get("CPTemplateApplicationSceneSessionRoleApplication", [{}])
+c = cfgs.get("UIWindowSceneSessionRoleCarPlay", [{}])
 chk("主场景 delegateClass=AppDelegate", w and w[0].get("UISceneDelegateClassName") == "AppDelegate")
 chk("CarPlay delegateClass=MFCarPlaySceneDelegate", c and c[0].get("UISceneDelegateClassName") == "MFCarPlaySceneDelegate")
 chk("允许多场景（CarPlay + 主界面共存）",
@@ -248,7 +248,9 @@ print()
 # 缺失 UISceneClassName 会让 CPInterfaceController 处于"半连接"：
 # didConnect 能进来，但 setRootTemplate 无响应/无错误/无 completion。
 # 参照上架 App Store 的 CarPlay 音频 App（missuo/kumone）的三项齐全配置。
-_cp_role = "CPTemplateApplicationSceneSessionRoleApplication"
+# 11142643：模板 role 已移除，本段断言改为检查 window role。
+# 保留 L227-234 那组（c 取 window role）作为兼容检查。
+_cp_role = "UIWindowSceneSessionRoleCarPlay"
 _scene_manifest = pl.get("UIApplicationSceneManifest", {}) or {}
 chk("UIApplicationSupportsMultipleScenes 为 true",
     _scene_manifest.get("UIApplicationSupportsMultipleScenes") is True)
@@ -259,15 +261,18 @@ chk("存在 CarPlay 场景 role 声明", _cp_role in _cfgs)
 _cp_list = _cfgs.get(_cp_role) or []
 chk("CarPlay role 是数组且非空", isinstance(_cp_list, list) and len(_cp_list) > 0)
 _cp0 = _cp_list[0] if _cp_list else {}
-chk("CarPlay 场景 UISceneConfigurationName 为 CarPlay",
-    _cp0.get("UISceneConfigurationName") == "CarPlay")
-chk("★ CarPlay 场景 UISceneClassName = CPTemplateApplicationScene",
-    _cp0.get("UISceneClassName") == "CPTemplateApplicationScene",
+chk("CarPlay window role 不设 UISceneConfigurationName（对齐 CarMovie）",
+    "UISceneConfigurationName" not in _cp0)
+chk("★ CarPlay window role 不设 UISceneClassName（对齐 CarMovie）",
+    "UISceneClassName" not in _cp0,
     str(_cp0.get("UISceneClassName")))
 chk("CarPlay 场景 UISceneDelegateClassName = MFCarPlaySceneDelegate",
     _cp0.get("UISceneDelegateClassName") == "MFCarPlaySceneDelegate")
-chk("UISupportsCarPlay 为 true（保险项）",
-    pl.get("UISupportsCarPlay") is True)
+# 11142644：CarMovie 没有 UISupportsCarPlay。
+# 在"走 window role"的路线上，这个键可能让系统继续按 CarPlay App
+# 分配模板 role，所以移除。车机图标由 entitlement 保证。
+chk("★ 已移除 UISupportsCarPlay（对齐 CarMovie）",
+    "UISupportsCarPlay" not in pl)
 
 # 主场景仍需声明，否则 iPhone 端黑屏
 _main = _cfgs.get("UIWindowSceneSessionRoleApplication") or []
@@ -300,8 +305,10 @@ chk("不再设置 sceneClass / delegateClass",
 _cfgs2 = (pl.get("UIApplicationSceneManifest", {}) or {}).get("UISceneConfigurations", {}) or {}
 chk("★ 新增 UIWindowSceneSessionRoleCarPlay（CarMovie 路径）",
     "UIWindowSceneSessionRoleCarPlay" in _cfgs2)
-chk("保留 CPTemplateApplicationSceneSessionRoleApplication（原路径）",
-    "CPTemplateApplicationSceneSessionRoleApplication" in _cfgs2)
+# 11142643：CarMovie 的 plist 没有模板 role，系统有它时优先选它。
+# 移除后只剩 window role 可选，强制走 UIWindowScene 路径。
+chk("★ 已移除 CPTemplateApplicationSceneSessionRoleApplication",
+    "CPTemplateApplicationSceneSessionRoleApplication" not in _cfgs2)
 _wc = (_cfgs2.get("UIWindowSceneSessionRoleCarPlay") or [{}])[0]
 chk("CarPlay window role 的 delegate 是裸类名",
     _wc.get("UISceneDelegateClassName") == "MFCarPlaySceneDelegate")
