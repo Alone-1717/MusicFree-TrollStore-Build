@@ -348,8 +348,10 @@ _ent = io.open(os.path.join(ROOT, "scripts", "trollstore.entitlements.plist"),
                encoding="utf-8").read()
 import plistlib as _pl
 _entd = _pl.loads(_ent.encode("utf-8"))
-chk("★ 已移除 com.apple.developer.carplay-audio",
-    "com.apple.developer.carplay-audio" not in _entd)
+# 11142641 实测：移除 carplay-audio -> 车机图标直接消失（手机端正常）。
+# 证明它是"在 CarPlay 中出现图标"的前提，必须保留。
+chk("★ carplay-audio 必须存在（车机图标前提）",
+    _entd.get("com.apple.developer.carplay-audio") is True)
 chk("application-identifier 保留",
     _entd.get("application-identifier") == "app.musicfree.ios")
 chk("team-identifier 保留",

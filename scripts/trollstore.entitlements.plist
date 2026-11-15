@@ -39,51 +39,40 @@
 	<key>com.apple.developer.team-identifier</key>
 	<string>TROLLTROLL</string>
 	<!--
-	  ============ 11142641：移除 com.apple.developer.carplay-audio ============
+	  ============ 11142642：恢复 com.apple.developer.carplay-audio ============
 
-	  十轮实测结论（每次都有真机日志支撑）：
+	  11142641 实验结论（真机实测，决定性）：
 
-	    11142637  补 sceneClass              -> templates=0
-	    11142638  133 行纯 Demo              -> templates=0
-	    11142639  return nil（纯 plist）     -> templates=0
-	    11142640  新增 UIWindowSceneSessionRoleCarPlay -> templates=0
+	    移除 carplay-audio 后 -> 车机上 MusicFree 图标**直接消失**。
+	    手机端 App 完全正常（能打开、歌单都在）。
 
-	  11142640 的日志给出了决定性线索：
+	  这证明：
+	    com.apple.developer.carplay-audio 是 CarPlay 里**出现图标的前提**。
+	    删掉它，carplayd 不把本 App 列为 CarPlay App，连入口都没有。
 
-	    SCENE willConnect class=CPTemplateApplicationScene
-	                       role=CPTemplateApplicationSceneSessionRoleApplication
+	  而保留它时（11142637 ~ 11142640 实测）：
+	    车机有图标 -> didConnect 能进来 -> 但 setRootTemplate 后
+	    topTemplate 恒为 nil、templates 恒为 0。
 
-	  我们在 Info.plist 里同时配了 UIWindowSceneSessionRoleCarPlay，
-	  但系统**根本没考虑它**，直接给了模板 role。
+	  两头都走不通：
+	    有 entitlement  -> 有图标，模板通道被静默拒绝
+	    无 entitlement  -> 连图标都没有
 
-	  对照 CarMovie（jp.dcsyhi.CarMovie，TrollStore 下 CarPlay 可用）的
-	  二进制实证：
+	  CarMovie 能用并非因为"删掉音频身份"，它大概率持有另一种
+	  CarPlay entitlement（视频/停车等私有类型），那是我们拿不到的东西。
 
-	    CPInterfaceController                            = 0 次
-	    CPListTemplate                                   = 0 次
-	    setRootTemplate                                  = 0 次
-	    CPTemplateApplicationSceneSessionRoleApplication = 0 次
-	    UIWindowSceneSessionRoleCarPlay                  = 0 次（只在 plist 里）
-	    UIWindowSceneDelegate / UIWindowScene / windowScene  -> 全部存在
-	    initWithWindowScene / scene:willConnectToSession:options: -> 存在
+	  所以这里恢复 carplay-audio。至少保证：
+	    - 车机上能看到 MusicFree 图标
+	    - App 能被车机拉起，日志能继续采集
+	    - 手机端功能完整可用
 
-	  也就是说：CarMovie 是一个**纯 UIKit 的 UIWindowSceneDelegate App**，
-	  一行 CarPlay 框架代码都没有，靠 UIViewController 在自建窗口里画界面。
-
-	  结合两边可推出：**role 由 entitlement 决定，不由 Info.plist 决定。**
-	  只要声明了 carplay-audio，carplayd 就把 App 当"正规音频 App"，
-	  强制分配模板 role；而模板这条路在 TrollStore 假签名下被静默拒绝。
-
-	  本轮实验：删掉 carplay-audio，让系统不再按音频 App 分类，
-	  看 UIWindowSceneSessionRoleCarPlay 是否能生效，从而走 CarMovie 的窗口路径。
-
-	  已知代价（明确记录）：
-	    - 失去音频 App 身份，车机上的音频控制（方向盘按键、系统"正在播放"页）
-	      可能失效
-	    - 但换取车机上能出界面，这是十轮以来的核心目标
-
-	  回滚：11142640 的包保留着，删回这一行即可。
+	  CarPlay 界面在 TrollStore 假签名下无法实现，这是平台限制，
+	  不是代码问题。真正可行的路只有：
+	    1) 有线 CarPlay 对照（USB 与无线的会话建立路径不同）
+	    2) 真实 Apple 开发者证书 + 审批通过的 CarPlay entitlement
 	-->
+	<key>com.apple.developer.carplay-audio</key>
+	<true/>
 	<key>keychain-access-groups</key>
 	<array>
 		<string>app.musicfree.ios</string>
