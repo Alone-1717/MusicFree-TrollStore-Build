@@ -9,6 +9,8 @@
  *   - 首次写时打一条 header（构建号 / 系统版本 / 时间），方便对照版本。
  */
 #import "MFCarPlayLog.h"
+#import <UIKit/UIKit.h>        /* UIDevice：取系统版本 / 机型写进日志 header */
+#import <dispatch/dispatch.h>  /* dispatch_queue_create / dispatch_async（显式依赖，别靠间接包含） */
 
 static dispatch_queue_t sLogQueue = nil;
 static NSFileHandle *sHandle = nil;
