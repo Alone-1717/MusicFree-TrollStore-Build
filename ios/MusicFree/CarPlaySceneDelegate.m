@@ -737,6 +737,87 @@ static id<NSObject> sDataObserverToken = nil;
 
 #pragma mark - UIScene 生命周期（只重绑，不重装）
 
+/*
+ * ============ 11142640：UIWindowSceneSessionRoleCarPlay 路径 ============
+ *
+ * Info.plist 里新增了 CarMovie 式的 role：
+ *     <key>UIWindowSceneSessionRoleCarPlay</key>
+ *     <dict><key>UISceneDelegateClassName</key>
+ *           <string>MFCarPlaySceneDelegate</string></dict>
+ *
+ * 该 role 由 **UIWindowScene** 实例化（不是 CPTemplateApplicationScene），
+ * 所以走的是 UISceneDelegate 的 scene:willConnectToSession:options:，
+ * 而不是 CPTemplateApplicationSceneDelegate 那条。
+ *
+ * 这条路径下**根本没有 CPInterfaceController** —— CarMovie 就是在这条路上
+ * 自建 UIWindow 画自己的界面，完全绕开 Apple 的模板系统。
+ *
+ * 实现策略：
+ *   1) 记录 scene 类型，写进日志（用于判断系统最终选了哪条 role）
+ *   2) 如果是 UIWindowScene，自建一个 window 挂到该 scene，画一个最小界面
+ *      （UITableView + 歌单列表文本），作为"这条路通了"的实证
+ *   3) 如果是 CPTemplateApplicationScene，什么都不做 —— 那条路由
+ *      didConnectInterfaceController: 处理
+ */
+- (void)scene:(UIScene *)scene
+    willConnectToSession:(UISceneSession *)session
+                 options:(UISceneConnectionOptions *)connectionOptions API_AVAILABLE(ios(13.0))
+{
+    NSString *sceneClass = NSStringFromClass([scene class]);
+    NSString *role = session.role ?: @"(nil)";
+    MFCarPlayLogBoth(@"SCENE willConnect class=%@ role=%@ mainThread=%d",
+          sceneClass, role, (int)[NSThread isMainThread]);
+
+    /*
+     * 只有 UIWindowScene 才走自建窗口这条路。
+     * CPTemplateApplicationScene 是 UIScene 子类但不是 UIWindowScene，
+     * 会被这里排除，交由模板路径处理。
+     */
+    if (![scene isKindOfClass:[UIWindowScene class]]) {
+        MFCarPlayLogBoth(@"SCENE willConnect: not a UIWindowScene (%@), "
+                         @"leaving it to CPTemplateApplicationSceneDelegate path",
+              sceneClass);
+        return;
+    }
+
+    UIWindowScene *windowScene = (UIWindowScene *)scene;
+
+    /*
+     * 自建窗口。这不是 Apple 官方 CarPlay 音频 App 的做法，
+     * 而是 CarMovie 在 TrollStore 下绕开模板系统的方式：
+     * 把车机屏幕当成一块普通的外部显示器，在上面画自己的 UI。
+     */
+    UIWindow *win = [[UIWindow alloc] initWithWindowScene:windowScene];
+    self.carPlayWindow = win;
+
+    UIViewController *vc = [[UIViewController alloc] init];
+    vc.view.backgroundColor = [UIColor blackColor];
+
+    /* 一个最简 UILabel，用于确认界面真的画上去了 */
+    UILabel *label = [[UILabel alloc] init];
+    label.text = @"MusicFree\nCarPlay Window Path OK";
+    label.numberOfLines = 0;
+    label.textAlignment = NSTextAlignmentCenter;
+    label.textColor = [UIColor whiteColor];
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    [vc.view addSubview:label];
+    [NSLayoutConstraint activateConstraints:@[
+        [label.centerXAnchor constraintEqualToAnchor:vc.view.centerXAnchor],
+        [label.centerYAnchor constraintEqualToAnchor:vc.view.centerYAnchor],
+        [label.widthAnchor constraintLessThanOrEqualToAnchor:vc.view.widthAnchor
+                                                   constant:-40],
+    ]];
+
+    win.rootViewController = vc;
+    [win makeKeyAndVisible];
+
+    MFCarPlayLogBoth(@"SCENE willConnect: WINDOW PATH ACTIVE "
+                     @"window=%p frame=%@ sceneClass=%@",
+          (__bridge void *)win,
+          NSStringFromCGRect(windowScene.coordinateSpace.bounds),
+          sceneClass);
+}
+
 - (CPInterfaceController *)interfaceControllerFromScene:(UIScene *)scene {
     if (![scene isKindOfClass:[CPTemplateApplicationScene class]]) {
         return nil;

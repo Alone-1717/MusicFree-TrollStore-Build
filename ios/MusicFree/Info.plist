@@ -134,6 +134,42 @@
 					<string>MFCarPlaySceneDelegate</string>
 				</dict>
 			</array>
+
+			<!-- ============================================================
+			     ★★★ 11142640：新增 CarMovie 式 role（UIWindowScene 路径）★★★
+
+			     实证来源：CarMovie（jp.dcsyhi.CarMovie，TrollStore 下 CarPlay
+			     可正常工作）的 Info.plist 用的是：
+			         <key>UIWindowSceneSessionRoleCarPlay</key>
+			         <array><dict>
+			             <key>UISceneDelegateClassName</key>
+			             <string>CarPlaySceneDelegate</string>
+			         </dict></array>
+			     注意它**不设** UISceneClassName、不设 UISceneConfigurationName。
+
+			     这与我们一直走的 CPTemplateApplicationScene 路径完全是两条路：
+			       CPTemplateApplicationSceneSessionRoleApplication
+			         -> CPTemplateApplicationScene
+			         -> CPTemplateApplicationSceneDelegate
+			         -> CPInterfaceController.setRootTemplate（模板渲染）
+			       UIWindowSceneSessionRoleCarPlay
+			         -> UIWindowScene
+			         -> UISceneDelegate（scene:willConnectToSession:）
+			         -> 自建 UIWindow + rootViewController
+
+			     我们的 MFCarPlaySceneDelegate 现在**同时实现两个协议**，
+			     所以无论系统选中哪条 role，都能接住回调。
+
+			     保留旧 role 是刻意的：这样本次只是"新增一条可能的路"，
+			     不会把已验证能触发 didConnect 的路径搞死。
+			     ============================================================ -->
+			<key>UIWindowSceneSessionRoleCarPlay</key>
+			<array>
+				<dict>
+					<key>UISceneDelegateClassName</key>
+					<string>MFCarPlaySceneDelegate</string>
+				</dict>
+			</array>
 		</dict>
 	</dict>
 

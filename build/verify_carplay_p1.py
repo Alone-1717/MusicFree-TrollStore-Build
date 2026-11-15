@@ -296,6 +296,32 @@ chk("不再程序化构造 UISceneConfiguration",
 chk("不再设置 sceneClass / delegateClass",
     "sceneClass" not in _adc and "delegateClass" not in _adc)
 
+# ============ 11142640：CarMovie 式 UIWindowSceneSessionRoleCarPlay ============
+_cfgs2 = (pl.get("UIApplicationSceneManifest", {}) or {}).get("UISceneConfigurations", {}) or {}
+chk("★ 新增 UIWindowSceneSessionRoleCarPlay（CarMovie 路径）",
+    "UIWindowSceneSessionRoleCarPlay" in _cfgs2)
+chk("保留 CPTemplateApplicationSceneSessionRoleApplication（原路径）",
+    "CPTemplateApplicationSceneSessionRoleApplication" in _cfgs2)
+_wc = (_cfgs2.get("UIWindowSceneSessionRoleCarPlay") or [{}])[0]
+chk("CarPlay window role 的 delegate 是裸类名",
+    _wc.get("UISceneDelegateClassName") == "MFCarPlaySceneDelegate")
+chk("CarPlay window role 不设 UISceneClassName（对齐 CarMovie）",
+    "UISceneClassName" not in _wc and "UISceneConfigurationName" not in _wc)
+chk("主场景 AppDelegate 未受影响",
+    ((_cfgs2.get("UIWindowSceneSessionRoleApplication") or [{}])[0]
+     .get("UISceneDelegateClassName") == "AppDelegate"))
+
+# delegate 必须同时实现两套协议，否则 window role 回调无人接
+_hdr = io.open(os.path.join(ROOT, "ios", "MusicFree", "CarPlaySceneDelegate.h"),
+               encoding="utf-8").read()
+chk("delegate 同时遵循 CPTemplateApplicationSceneDelegate",
+    "CPTemplateApplicationSceneDelegate" in _hdr)
+chk("delegate 同时遵循 UISceneDelegate",
+    "UISceneDelegate" in _hdr)
+chk("实现 scene:willConnectToSession:",
+    "willConnectToSession" in cm)
+chk("carPlayWindow 属性存在", "carPlayWindow" in _hdr)
+
 print("=" * 50)
 print("Phase 1 static check:", "ALL PASS" if ok else "FAILED")
 sys.exit(0 if ok else 1)
