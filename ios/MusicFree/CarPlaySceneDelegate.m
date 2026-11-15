@@ -283,12 +283,25 @@ static id<NSObject> sDataObserverToken = nil;
         CPListTemplate *probe = (CPListTemplate *)template;
         NSUInteger secCount = probe.sectionCount;
         NSUInteger dataSheets = [(NSArray *)(_lastSheetsSnapshot ?: @[]) count];
-        MFCarPlayLogBoth(@"ON-SCREEN CONTENT: sectionCount=%lu dataSheets=%lu appliedBefore=%d sameAsRoot=%d",
-              (unsigned long)secCount, (unsigned long)dataSheets, _rootApplied, isSameObject);
-        if (secCount == 0) {
-            MFCarPlayLogBoth(@"WARN: template on screen but sectionCount==0 — "
-                             @"currentRootSections returned an EMPTY array (real bug)");
-        }
+
+        /*
+         * 把判定结果并进同一条日志，而不是放在 if (secCount == 0) 的独立分支里。
+         *
+         * 原因：11142629 的出包验证发现，独立的
+         *   if (secCount == 0) { MFCarPlayLogBoth(@"WARN: ... sectionCount==0 ..."); }
+         * 整段被编译器优化掉了 —— 二进制里连一个字节都搜不到。
+         * （sectionCount 是 NSUInteger，优化器在某些优化级别下把该比较判为恒假，
+         *  连带把字符串常量一起丢弃。）
+         *
+         * 后果很实际：车机真出问题时，恰好少了这条最该看的告警。
+         * 现在改成把状态编码进一条**必定执行**的日志里，字符串不会再被丢。
+         */
+        const char *verdict = (secCount == 0) ? "EMPTY_SECTIONS_BUG"
+                            : (dataSheets == 0) ? "EMPTY_DATA"
+                            : "OK";
+        MFCarPlayLogBoth(@"ON-SCREEN CONTENT: sectionCount=%lu dataSheets=%lu appliedBefore=%d sameAsRoot=%d verdict=%s",
+              (unsigned long)secCount, (unsigned long)dataSheets,
+              _rootApplied, isSameObject, verdict);
     }
 
     if (isList) {
@@ -547,8 +560,52 @@ static id<NSObject> sDataObserverToken = nil;
 
     /* 同一 controller：绝不重装 root，但每次生命周期都向框架核对一次是否已被接受 */
     BOOL confirmed = [self syncAppliedStateFromFramework];
-    MFCarPlayLogBoth(@"lifecycle: keep root, no reinstall (%@) applied=%d confirmed=%d ready=%d",
-          reason, _rootApplied, confirmed, _templateReady);
+
+    /*
+     * ============ 11142630：修复 _rootExhausted 不可恢复 ============
+     *
+     * 11142629 真机日志暴露的缺陷：
+     *   05:37:23  rearm exhausted after 2 attempts, stop polling
+     *   05:37:41  lifecycle: keep root, no reinstall (willEnterForeground) applied=0 ready=1
+     *   05:37:41  lifecycle: keep root, no reinstall (didBecomeActive)      applied=0 ready=1
+     *
+     * 用户在车机上重新点一次 MusicFree 图标，场景重新激活了，
+     * 但 installRootIfNeededAllowRearm: 第一行 `if (_rootExhausted) return;`
+     * 直接把后续所有尝试挡死 —— App 永久放弃，只能拔线重连。
+     *
+     * 重置条件刻意收紧到三个同时成立（评审要求精确定义，不要无条件重置）：
+     *   1) 同一个 interfaceController       —— 不是重连，只是场景重新激活
+     *   2) _rootApplied == NO               —— root 确实还没上屏
+     *   3) 本次核对也确认失败（!confirmed） —— 框架确实不认
+     * 只有这三条都满足，才认为"上一轮 rearm 窗口已过，值得再给一次机会"。
+     *
+     * 不满足就完全不碰状态：真正断开重连走的是 sceneIC != current 分支，
+     * 那条路本来就会重置一切，不会被这里干扰。
+     */
+    if (!_rootApplied && !confirmed && _rootExhausted && self.interfaceController) {
+        MFCarPlayLogBoth(@"RESET exhausted on scene reactivation (%@): "
+                         @"same controller, applied=0, framework still not confirming — retry once",
+              reason);
+        _rootExhausted = NO;
+        _rearmCount = 0;
+        _rearmPending = NO;
+        _rootInstallInFlight = NO;
+        _lastInstallAt = 0;
+        _rootGeneration += 1;
+        if (!_rootInstalledFor) {
+            /* 连首发都没成功过，走正常安装路径 */
+            [self installRootIfNeeded];
+        } else {
+            /* 首发发过但没被接受：清掉一次性标记，允许重新发起 */
+            _rootInstalledFor = nil;
+            [self installRootIfNeeded];
+        }
+        [self requestSheetsNow];
+        return;
+    }
+
+    MFCarPlayLogBoth(@"lifecycle: keep root, no reinstall (%@) applied=%d confirmed=%d ready=%d exhausted=%d",
+          reason, _rootApplied, confirmed, _templateReady, _rootExhausted);
     if (confirmed) {
         [self refreshRootSections];
     }

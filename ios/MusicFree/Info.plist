@@ -110,12 +110,42 @@
 				<dict>
 					<key>UISceneConfigurationName</key>
 					<string>CarPlay</string>
+					<!--
+					  ★ 11142630 关键修复：补 UISceneClassName。
+
+					  之前只有 UISceneDelegateClassName，系统知道 delegate 是谁，
+					  但不知道用哪个 Scene 类来实例化 CarPlay 场景。
+					  后果正是我们连续七版观察到的现象：
+					    didConnect 能进来（说明场景被创建、delegate 被找到）
+					    但 setRootTemplate 发出去**无响应、无异常、无 completion**
+					    topTemplate 永远不确认
+					  典型的"半连接"状态 —— CPInterfaceController 的 XPC 通道
+					  因为没有正确的 Scene 类托管而处于半死状态。
+
+					  对照上架 App Store 的真实 CarPlay 音频 App（missuo/kumone），
+					  它的 CarPlay 场景配置正是这样三项齐全：
+					    UISceneConfigurationName = "CarPlay"
+					    UISceneClassName         = "CPTemplateApplicationScene"
+					    UISceneDelegateClassName = "<Module>.CarPlaySceneDelegate"
+					-->
+					<key>UISceneClassName</key>
+					<string>CPTemplateApplicationScene</string>
 					<key>UISceneDelegateClassName</key>
 					<string>MFCarPlaySceneDelegate</string>
 				</dict>
 			</array>
 		</dict>
 	</dict>
+
+	<!--
+	  UISupportsCarPlay：App 级 CarPlay 开关。
+
+	  它不是 CarPlay 音频 App 的强制项（真正的门槛是
+	  com.apple.developer.carplay-audio entitlement + 完整的 scene 配置），
+	  但作为保险声明无害。kumone 也带了它。
+	-->
+	<key>UISupportsCarPlay</key>
+	<true/>
 
 	<!-- 允许"文件"App 向 Documents 导入本地音乐与 .js 插件，并支持"打开方式" -->
 	<key>UIFileSharingEnabled</key>

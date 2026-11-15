@@ -245,6 +245,44 @@ out = (r.stdout or b"").decode("utf-8", errors="replace")
 chk("verify-ios-patch 11/11", "11/11" in out, " ".join(out.strip().split("\n")[-2:]))
 
 print()
+# ============ 11142630：CarPlay 场景配置必须完整 ============
+# 缺失 UISceneClassName 会让 CPInterfaceController 处于"半连接"：
+# didConnect 能进来，但 setRootTemplate 无响应/无错误/无 completion。
+# 参照上架 App Store 的 CarPlay 音频 App（missuo/kumone）的三项齐全配置。
+_cp_role = "CPTemplateApplicationSceneSessionRoleApplication"
+_scene_manifest = pl.get("UIApplicationSceneManifest", {}) or {}
+chk("UIApplicationSupportsMultipleScenes 为 true",
+    _scene_manifest.get("UIApplicationSupportsMultipleScenes") is True)
+
+_cfgs = _scene_manifest.get("UISceneConfigurations", {}) or {}
+chk("存在 CarPlay 场景 role 声明", _cp_role in _cfgs)
+
+_cp_list = _cfgs.get(_cp_role) or []
+chk("CarPlay role 是数组且非空", isinstance(_cp_list, list) and len(_cp_list) > 0)
+_cp0 = _cp_list[0] if _cp_list else {}
+chk("CarPlay 场景 UISceneConfigurationName 为 CarPlay",
+    _cp0.get("UISceneConfigurationName") == "CarPlay")
+chk("★ CarPlay 场景 UISceneClassName = CPTemplateApplicationScene",
+    _cp0.get("UISceneClassName") == "CPTemplateApplicationScene",
+    str(_cp0.get("UISceneClassName")))
+chk("CarPlay 场景 UISceneDelegateClassName = MFCarPlaySceneDelegate",
+    _cp0.get("UISceneDelegateClassName") == "MFCarPlaySceneDelegate")
+chk("UISupportsCarPlay 为 true（保险项）",
+    pl.get("UISupportsCarPlay") is True)
+
+# 主场景仍需声明，否则 iPhone 端黑屏
+_main = _cfgs.get("UIWindowSceneSessionRoleApplication") or []
+chk("主场景声明仍在", len(_main) > 0)
+if _main:
+    chk("主场景 delegate 为 AppDelegate",
+        _main[0].get("UISceneDelegateClassName") == "AppDelegate")
+
+# ---- _rootExhausted 必须可恢复（11142629 日志暴露的缺陷）----
+chk("_rootExhausted 有 reset 路径", "RESET exhausted on scene reactivation" in cm)
+chk("reset 条件是三条同时成立",
+    "!_rootApplied && !confirmed && _rootExhausted" in cm)
+chk("reset 后清 rearmCount", "_rootExhausted = NO;" in cm)
+chk("lifecycle 日志含 exhausted 字段", "ready=%d exhausted=%d" in cm)
 print("=" * 50)
 print("Phase 1 static check:", "ALL PASS" if ok else "FAILED")
 sys.exit(0 if ok else 1)

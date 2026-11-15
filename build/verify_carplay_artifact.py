@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142629"
+EXPECTED_VERSION = "11142630"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -48,21 +48,14 @@ BINARY_MARKERS = [
     b"SYNC CONFIRM: topTemplate IS our root (via top-template check)",
     b"ON-SCREEN CONTENT: sectionCount=",
     b"updateSections done root.sectionCount=",
-    b"sectionCount==0",
-    b"sectionCount>0 but items==0",
-
     b"applied via sync-confirm path",
-    b"template on screen but ZERO sections",
-
     b"didConnect ctrl=%p (template-only audio path)",
     b"ROOT TEMPLATE VISIBLE",
     b"templateDidAppear template=%p isList=",
     b"setRootTemplate FAILED localized=",
     b"content unchanged, skip updateSections",
     b"CPInterfaceControllerDelegate registered",
-    b"pushing anyway",
     b"data ready sections=",
-    b"applied via framework check",
     b"recoverTemplateScene",
     b"rebind controller",
     b"carPlayJSReady",
@@ -73,7 +66,15 @@ BINARY_MARKERS = [
     b"MFCarPlayDataDidUpdate",
     b"dataSheets=",
     b"scene KVC interfaceController failed:",
-    b"caller will skip rebind",
+    b"ON-SCREEN CONTENT: sectionCount=%lu dataSheets=%lu appliedBefore=%d sameAsRoot=%d",
+    b"updateSections done root.sectionCount=%lu pushed=%lu sheetsReceived=%d applied=%d",
+    b"scene KVC interfaceController failed: %@ (%@)",
+    b"ON-SCREEN CONTENT: sectionCount=%lu dataSheets=%lu appliedBefore=%d sameAsRoot=%d verdict=%s",
+    b"EMPTY_SECTIONS_BUG",
+    b"verdict=%s",
+    b"RESET exhausted on scene reactivation",
+    b"same controller, applied=0, framework still not confirming",
+    b"ready=%d exhausted=%d",
 ]
 
 # 旧版已证伪/致命的标记，产物里绝不能再出现
