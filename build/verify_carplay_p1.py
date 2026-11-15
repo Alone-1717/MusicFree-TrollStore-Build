@@ -322,6 +322,15 @@ chk("实现 scene:willConnectToSession:",
     "willConnectToSession" in cm)
 chk("carPlayWindow 属性存在", "carPlayWindow" in _hdr)
 
+# 11142640 构建失败回归护栏：
+# .m 里的类扩展若没声明 <UISceneDelegate>，carPlayWindow 的隐式 synthesize 会失效，
+# Xcode 报 "property 'carPlayWindow' not found on object of type MFCarPlaySceneDelegate *"。
+# 本机 clang 因桩差异没抓到，所以这里加源码级断言。
+chk(".m 类扩展声明遵循 UISceneDelegate",
+    "@interface MFCarPlaySceneDelegate () <UISceneDelegate>" in cm)
+chk("头文件与实现都有 carPlayWindow",
+    "carPlayWindow" in _hdr and "self.carPlayWindow = win" in cm)
+
 print("=" * 50)
 print("Phase 1 static check:", "ALL PASS" if ok else "FAILED")
 sys.exit(0 if ok else 1)

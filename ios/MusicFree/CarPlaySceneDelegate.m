@@ -117,7 +117,7 @@ static __weak CPInterfaceController *sRootedController = nil;
 static __weak MFCarPlaySceneDelegate *sActiveDelegate = nil;
 static id<NSObject> sDataObserverToken = nil;
 
-@interface MFCarPlaySceneDelegate ()
+@interface MFCarPlaySceneDelegate () <UISceneDelegate>
 - (void)attachInterfaceController:(CPInterfaceController *)interfaceController
                             scene:(CPTemplateApplicationScene *)scene;
 - (void)registerDataObserverIfNeeded;
