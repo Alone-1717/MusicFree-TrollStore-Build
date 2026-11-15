@@ -15,6 +15,7 @@ import { NativeEventEmitter, NativeModules, Platform } from "react-native";
 import MusicSheet from "@/core/musicSheet";
 import TrackPlayer from "@/core/trackPlayer";
 import { errorLog, trace } from "@/utils/log";
+import { getDefaultStore } from "jotai";
 
 const NativeBridge = NativeModules.CarPlayBridge;
 
@@ -123,6 +124,52 @@ async function handleControl(action: string) {
 }
 
 /* ============ 11142655：JS -> 原生 新通道 ============ */
+
+/**
+ * 11142657：推送歌词给原生（车机播放页滚动显示）。
+ *
+ * 歌词来源：lyricManager 的 lyricStateAtom
+ *   结构：{ loading, lyrics: [{time, lrc, translation?, index}], hasTranslation }
+ *
+ * 原生需要的是 [{time, lrc, translation}]，这里做字段裁剪。
+ */
+function pushLyric() {
+    if (!NativeBridge?.setLyric) {
+        return;
+    }
+    try {
+        /*
+         * 动态 import 避免循环依赖：
+         * lyricManager 依赖 trackPlayer，而本文件也被 bootstrap 引用。
+         */
+        const lyricModule = require("@/core/lyricManager");
+        const mgr = lyricModule.default ?? lyricModule;
+        const state = mgr?.lyricState;
+
+        if (!state || !Array.isArray(state.lyrics)) {
+            trace("[CarPlay] pushLyric: no lyric state");
+            return;
+        }
+
+        if (state.loading) {
+            trace("[CarPlay] pushLyric: still loading");
+            return;
+        }
+
+        const lines = state.lyrics
+            .filter((x: any) => typeof x?.time === "number" && typeof x?.lrc === "string")
+            .map((x: any) => ({
+                time: x.time,
+                lrc: x.lrc,
+                translation: x.translation ?? "",
+            }));
+
+        NativeBridge.setLyric(lines);
+        trace(`[CarPlay] pushed ${lines.length} lyric lines`);
+    } catch (e) {
+        errorLog("[CarPlay] pushLyric", e);
+    }
+}
 
 /**
  * 处理车机的联网搜索请求。
@@ -261,8 +308,34 @@ export function setupCarPlay() {
      * 后续（构建 B）会加定时器做实时刷新。
      */
     pushNowPlayingState();
+    pushLyric();
 
-    trace("[CarPlay] JS bridge started (search + state channels ready)");
+    /*
+     * 11142657：歌词异步加载 —— 切歌后歌词要等插件返回，
+     * 所以用轮询兜底：每 2 秒检查一次歌词是否变了，变了就推。
+     * （lyricManager 没有暴露事件订阅，轮询最稳）
+     */
+    let lastLyricSig = "";
+    setInterval(() => {
+        try {
+            const lyricModule = require("@/core/lyricManager");
+            const mgr = lyricModule.default ?? lyricModule;
+            const state = mgr?.lyricState;
+            if (!state || state.loading || !Array.isArray(state.lyrics)) {
+                return;
+            }
+            /* 用「行数 + 首行时间」做签名，避免每 2 秒都推 */
+            const sig = `${state.lyrics.length}|${state.lyrics[0]?.time ?? ""}|${state.lyrics[0]?.lrc ?? ""}`;
+            if (sig !== lastLyricSig) {
+                lastLyricSig = sig;
+                pushLyric();
+            }
+        } catch (e) {
+            /* 静默 */
+        }
+    }, 2000);
+
+    trace("[CarPlay] JS bridge started (search + state + lyric channels ready)");
 }
 
 export default {

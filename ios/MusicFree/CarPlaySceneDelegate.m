@@ -447,7 +447,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
 
 /* 11142650：播放页（静态版）—— 点歌后跳到这里 */
-@interface MFCarPlayWindowNowPlayingVC : UIViewController
+@interface MFCarPlayWindowNowPlayingVC : UIViewController <UITableViewDataSource, UITableViewDelegate>
 @property (nonatomic, weak) MFCarPlaySceneDelegate *carPlayDelegate;
 @property (nonatomic, strong) NSDictionary *nowPlaying;
 /* 11142653：封面背景层（模糊 + 半透明黑遮罩，避免纯黑单调） */
@@ -460,6 +460,13 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 /* 11142655：实时播放状态（JS 回传） */
 @property (nonatomic, strong) UIProgressView *progressView;
 @property (nonatomic, strong) UIButton *playPauseButton;
+
+/* ============ 11142657：歌词 ============ */
+@property (nonatomic, strong) UITableView *lyricTable;      /* 歌词列表 */
+@property (nonatomic, strong) NSArray *lyricLines;          /* @[{time, lrc, translation}] */
+@property (nonatomic, assign) NSInteger currentLyricIndex;  /* 当前高亮行 */
+@property (nonatomic, assign) BOOL showingLyric;            /* 是否在歌词模式 */
+@property (nonatomic, assign) double currentProgress;       /* 当前播放秒数（JS 推送） */
 @end
 
 
@@ -2941,6 +2948,15 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     self.coverView.backgroundColor = MFCarPlayCardColor();
     self.coverView.contentMode = UIViewContentModeScaleAspectFill;
     self.coverView.translatesAutoresizingMaskIntoConstraints = NO;
+    /*
+     * 11142657：封面可点击 —— 点击切换封面 / 歌词（用户选的方案 ③）。
+     * 必须开 userInteractionEnabled，UIImageView 默认是关的。
+     */
+    self.coverView.userInteractionEnabled = YES;
+    UITapGestureRecognizer *tap =
+        [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(onCoverTap)];
+    tap.numberOfTapsRequired = 1;
+    [self.coverView addGestureRecognizer:tap];
     [self.view addSubview:self.coverView];
 
     /* 异步下载封面（失败就不显示，不影响其他控件） */
@@ -3044,6 +3060,12 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
                                              selector:@selector(handleNowPlayingState:)
                                                  name:@"MFCarPlayNowPlayingState"
                                                object:nil];
+
+    /* 11142657：歌词推送监听 */
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleLyricUpdate:)
+                                                 name:@"MFCarPlayLyric"
+                                               object:nil];
 }
 
 /* 收到 JS 播放状态 */
@@ -3065,6 +3087,12 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     if (isPlaying && self.playPauseButton) {
         NSString *t = isPlaying.boolValue ? @"\u23F8" : @"\u25B6";   /* ⏸ / ▶ */
         [self.playPauseButton setTitle:t forState:0];
+    }
+
+    /* 11142657：记录进度供歌词高亮使用 */
+    if (prog) {
+        self.currentProgress = prog.doubleValue;
+        [self refreshLyricHighlight];
     }
 
     /* 更新时间文字 */
@@ -3116,6 +3144,176 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 - (void)onBack {
     MFCarPlayLogBoth(@"%@ tap BACK", @"MFCarPlayWindowNowPlayingVC");
     [self.navigationController popViewControllerAnimated:YES];
+}
+
+
+#pragma mark - 11142657：歌词（点封面切换 / 滚动高亮）
+
+/*
+ * 封面点击切换封面 <-> 歌词。
+ *
+ * 布局（用户选择方案 ③）：
+ *   封面模式：  歌名 / 歌手 · 专辑 / [封面] / 按钮 / 时间
+ *   歌词模式：  歌名 / 歌手 · 专辑 / [滚动歌词] / 按钮 / 时间
+ *
+ * 两者共用同一个封面位置的矩形区域，只是显隐切换。
+ */
+- (void)onCoverTap {
+    self.showingLyric = !self.showingLyric;
+    MFCarPlayLogBoth(@"NOWPLAYING toggle lyric mode -> %d", (int)self.showingLyric);
+
+    if (self.showingLyric) {
+        [self buildLyricTableIfNeeded];
+        self.coverView.hidden = YES;
+        self.lyricTable.hidden = NO;
+        [self refreshLyricHighlight];
+    } else {
+        self.coverView.hidden = NO;
+        self.lyricTable.hidden = YES;
+    }
+}
+
+/* 懒建歌词表格 */
+- (void)buildLyricTableIfNeeded {
+    if (self.lyricTable) {
+        return;
+    }
+
+    UITableView *tb = [[UITableView alloc] initWithFrame:CGRectZero
+                                                   style:UITableViewStylePlain];
+    tb.dataSource = self;
+    tb.delegate = self;
+    tb.rowHeight = 46.0;
+    tb.backgroundColor = [UIColor clearColor];      /* 透出背景图 */
+    tb.separatorColor = [UIColor clearColor];
+    tb.showsVerticalScrollIndicator = NO;
+    tb.translatesAutoresizingMaskIntoConstraints = NO;
+    tb.hidden = YES;
+    [self.view addSubview:tb];
+    self.lyricTable = tb;
+
+    /* 与封面同一位置，稍宽一点（歌词行更长） */
+    [NSLayoutConstraint activateConstraints:@[
+        [tb.topAnchor constraintEqualToAnchor:self.coverView.topAnchor],
+        [tb.bottomAnchor constraintEqualToAnchor:self.coverView.bottomAnchor],
+        [tb.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:60],
+        [tb.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-60],
+    ]];
+
+    /* 加载当前歌词 */
+    NSArray *lines = [MFCarPlayBridge shared].lyric;
+    if (!lines || lines.count == 0) {
+        lines = self.lyricLines;
+    }
+    self.lyricLines = lines ?: @[];
+    [tb reloadData];
+
+    MFCarPlayLogBoth(@"NOWPLAYING lyric table built: %lu lines",
+          (unsigned long)self.lyricLines.count);
+}
+
+#pragma mark UITableViewDataSource（歌词）
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return (NSInteger)self.lyricLines.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView
+         cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *cid = @"lyric";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cid];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                      reuseIdentifier:cid];
+        cell.backgroundColor = [UIColor clearColor];
+        cell.selectionStyle = 0;
+        cell.textLabel.textAlignment = NSTextAlignmentCenter;
+        cell.detailTextLabel.textAlignment = NSTextAlignmentCenter;
+    }
+    if (indexPath.row < (NSInteger)self.lyricLines.count) {
+        NSDictionary *line = self.lyricLines[(NSUInteger)indexPath.row];
+        NSString *lrc = [line[@"lrc"] isKindOfClass:[NSString class]] ? line[@"lrc"] : @"";
+        NSString *tr = [line[@"translation"] isKindOfClass:[NSString class]]
+            ? line[@"translation"] : @"";
+
+        BOOL isCurrent = (indexPath.row == self.currentLyricIndex);
+        cell.textLabel.text = lrc;
+        cell.textLabel.font = [UIFont systemFontOfSize:(isCurrent ? 22.0 : 18.0)];
+        cell.textLabel.textColor = isCurrent
+            ? MFCarPlayAccentColor()                       /* 当前行：浅蓝高亮 */
+            : [UIColor colorWithRed:0.75 green:0.75 blue:0.78 alpha:1.0];
+        cell.detailTextLabel.text = tr;
+        cell.detailTextLabel.textColor = [UIColor colorWithRed:0.6 green:0.6 blue:0.63 alpha:1.0];
+    }
+    return cell;
+}
+
+/* 歌词不响应点击（避免误触） */
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:NO];
+}
+
+/*
+ * 根据播放进度刷新高亮行 + 自动滚动到中间。
+ *
+ * 由 handleNowPlayingState: 调用（JS 每秒推一次 progress）。
+ */
+- (void)refreshLyricHighlight {
+    if (!self.showingLyric || !self.lyricTable || self.lyricLines.count == 0) {
+        return;
+    }
+
+    double prog = self.currentProgress;
+    NSInteger target = -1;
+    for (NSUInteger k = 0; k < self.lyricLines.count; k++) {
+        NSDictionary *line = self.lyricLines[k];
+        double t = [line[@"time"] isKindOfClass:[NSNumber class]]
+            ? [line[@"time"] doubleValue] : 0;
+        if (t <= prog) {
+            target = (NSInteger)k;
+        } else {
+            break;
+        }
+    }
+    if (target < 0) {
+        target = 0;
+    }
+    if (target == self.currentLyricIndex) {
+        return;
+    }
+
+    NSInteger old = self.currentLyricIndex;
+    self.currentLyricIndex = target;
+
+    /* 只刷这两行，避免整表重载导致闪烁 */
+    NSMutableArray<NSIndexPath *> *paths = [NSMutableArray array];
+    if (old >= 0 && old < (NSInteger)self.lyricLines.count) {
+        [paths addObject:[NSIndexPath indexPathForRow:old inSection:0]];
+    }
+    [paths addObject:[NSIndexPath indexPathForRow:target inSection:0]];
+    [self.lyricTable reloadRowsAtIndexPaths:paths
+                           withRowAnimation:UITableViewRowAnimationNone];
+
+    /* 滚动到当前行（放在中间偏上，留出上下文） */
+    NSIndexPath *cur = [NSIndexPath indexPathForRow:target inSection:0];
+    [self.lyricTable scrollToRowAtIndexPath:cur
+                           atScrollPosition:UITableViewScrollPositionMiddle
+                                   animated:YES];
+}
+
+/* 收到歌词推送时刷新 */
+- (void)handleLyricUpdate:(NSNotification *)note {
+    NSArray *lines = note.userInfo[@"lines"];
+    if (![lines isKindOfClass:[NSArray class]]) {
+        return;
+    }
+    self.lyricLines = lines;
+    self.currentLyricIndex = -1;
+    if (self.lyricTable) {
+        [self.lyricTable reloadData];
+        [self refreshLyricHighlight];
+    }
+    MFCarPlayLogBoth(@"NOWPLAYING lyric updated: %lu lines", (unsigned long)lines.count);
 }
 
 @end

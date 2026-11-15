@@ -56,6 +56,8 @@
 - (NSString *)lastSearchQuery;
 /** 最近一次播放状态快照 */
 - (NSDictionary *)nowPlayingState;
+/** 11142657：当前歌词 @[{time, lrc, translation}] */
+- (NSArray *)lyric;
 
 /** JS 监听器注册完成后主动冲刷 RN 就绪前排队的车机事件 */
 - (void)carPlayJSReady;

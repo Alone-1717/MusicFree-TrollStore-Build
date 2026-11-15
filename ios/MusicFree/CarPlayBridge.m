@@ -31,6 +31,8 @@ static NSString *const kMFCarPlayDataDidUpdate = @"MFCarPlayDataDidUpdate";
 static NSString *const kMFCarPlaySearchResults = @"MFCarPlaySearchResults";
 static NSString *const kMFCarPlayNowPlayingState = @"MFCarPlayNowPlayingState";
 static NSString *const kMFCarPlayJSReady = @"MFCarPlayJSReady";
+/* 11142657：歌词推送（JS -> 原生） */
+static NSString *const kMFCarPlayLyric = @"MFCarPlayLyric";
 
 /* JS 就绪标记（进程级，供原生判断要不要等 JS） */
 static BOOL sJSReady = NO;
@@ -48,6 +50,8 @@ static NSUInteger const kMFCarPlayMaxPendingEvents = 50;
 @property (nonatomic, strong) NSArray *searchResultsData;
 @property (nonatomic, strong) NSDictionary *nowPlayingStateData;
 @property (nonatomic, copy) NSString *lastSearchQuery;
+/* 11142657：当前歌词（@[{time, lrc, translation}]） */
+@property (nonatomic, strong) NSArray *lyricLines;
 - (void)postDataUpdate:(NSDictionary *)userInfo;
 - (void)sendCarPlayEvent:(NSString *)name body:(NSDictionary *)body;
 - (void)flushPendingEvents;
@@ -78,6 +82,7 @@ static MFCarPlayBridge *sharedInstance = nil;
         _searchResultsData = @[];
         _nowPlayingStateData = @{};
         _lastSearchQuery = @"";
+        _lyricLines = @[];
         sharedInstance = self;
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                  selector:@selector(handleCarPlayEvent:)
@@ -233,6 +238,47 @@ RCT_EXPORT_METHOD(setNowPlayingState:(NSDictionary *)state)
     [[NSNotificationCenter defaultCenter] postNotificationName:kMFCarPlayNowPlayingState
                                                         object:nil
                                                       userInfo:state];
+}
+
+/*
+ * ============ 11142657：歌词推送 ============
+ *
+ * JS 侧取到歌词后调用：
+ *   NativeBridge.setLyric([
+ *     { time: 12.34, lrc: "歌词文本", translation: "翻译（可选）" },
+ *     ...
+ *   ])
+ *
+ * 时间为秒（浮点）。原生按此排序后供播放页滚动显示。
+ */
+RCT_EXPORT_METHOD(setLyric:(NSArray *)lines)
+{
+    NSArray *arr = [lines isKindOfClass:[NSArray class]] ? lines : @[];
+
+    /*
+     * 防御排序：按 time 升序。
+     * 插件返回的歌词通常已排序，但不保证，这里统一处理。
+     */
+    NSArray *sorted = [arr sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
+        double ta = [a isKindOfClass:[NSDictionary class]] ? [a[@"time"] doubleValue] : 0;
+        double tb = [b isKindOfClass:[NSDictionary class]] ? [b[@"time"] doubleValue] : 0;
+        if (ta < tb) return NSOrderedAscending;
+        if (ta > tb) return NSOrderedDescending;
+        return NSOrderedSame;
+    }];
+
+    self.lyricLines = sorted;
+
+    NSLog(@"[MusicFree][CarPlay] BRIDGE got %lu lyric lines", (unsigned long)sorted.count);
+
+    [[NSNotificationCenter defaultCenter] postNotificationName:kMFCarPlayLyric
+                                                        object:nil
+                                                      userInfo:@{@"lines": sorted}];
+}
+
+/* 查询当前歌词 */
+- (NSArray *)lyric {
+    return self.lyricLines ?: @[];
 }
 
 /*

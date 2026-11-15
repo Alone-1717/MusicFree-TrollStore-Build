@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142656"
+EXPECTED_VERSION = "11142657"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -118,6 +118,10 @@ BINARY_MARKERS = [
     b"ROOT search '%@' -> local=%lu jsReady=%d",
     b"ROOT search: JS returned %lu results for '%@'",
     b"NOWPLAYING state update: playing=%@ progress=%@ duration=%@",
+    b"BRIDGE got %lu lyric lines",
+    b"NOWPLAYING toggle lyric mode -> %d",
+    b"NOWPLAYING lyric table built: %lu lines",
+    b"NOWPLAYING lyric updated: %lu lines",
 ]
 
 # 旧版已证伪/致命的标记，产物里绝不能再出现
