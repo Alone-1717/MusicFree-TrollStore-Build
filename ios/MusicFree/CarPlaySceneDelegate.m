@@ -768,11 +768,6 @@ static id<NSObject> sDataObserverToken = nil;
     MFCarPlayLogBoth(@"SCENE willConnect class=%@ role=%@ mainThread=%d",
           sceneClass, role, (int)[NSThread isMainThread]);
 
-    /*
-     * 只有 UIWindowScene 才走自建窗口这条路。
-     * CPTemplateApplicationScene 是 UIScene 子类但不是 UIWindowScene，
-     * 会被这里排除，交由模板路径处理。
-     */
     if (![scene isKindOfClass:[UIWindowScene class]]) {
         MFCarPlayLogBoth(@"SCENE willConnect: not a UIWindowScene (%@), "
                          @"leaving it to CPTemplateApplicationSceneDelegate path",
@@ -783,39 +778,98 @@ static id<NSObject> sDataObserverToken = nil;
     UIWindowScene *windowScene = (UIWindowScene *)scene;
 
     /*
-     * 自建窗口。这不是 Apple 官方 CarPlay 音频 App 的做法，
-     * 而是 CarMovie 在 TrollStore 下绕开模板系统的方式：
-     * 把车机屏幕当成一块普通的外部显示器，在上面画自己的 UI。
+     * ============ 11142641：CarMovie 式自建窗口，画真实歌单界面 ============
+     *
+     * 本轮移除了 com.apple.developer.carplay-audio entitlement，
+     * 目的就是让 carplayd 不再把本 App 归为"正规音频 App"，
+     * 从而允许 UIWindowSceneSessionRoleCarPlay 生效、走 UIWindowScene 路径。
+     *
+     * CarMovie 的二进制实证（详见 entitlements 注释）：
+     *   - 0 次 CPInterfaceController / CPListTemplate / setRootTemplate
+     *   - 完整实现 UIWindowSceneDelegate + initWithWindowScene:
+     *   - 用 UIViewController 在自建窗口里画界面
+     *
+     * 所以这里不再用 CPListTemplate（那条模板路径在 TrollScope 假签名下
+     * 被静默拒绝，十轮实测 templates 恒为 0），
+     * 改成用 UIKit 直接画：一个 UITableView 列出本地歌单。
+     *
+     * 数据仍来自原生 MMKV（MFCarPlayNativeSheets），同步读，安全。
      */
     UIWindow *win = [[UIWindow alloc] initWithWindowScene:windowScene];
     self.carPlayWindow = win;
 
+    NSArray<NSDictionary *> *sheets = [self sheets];
+
     UIViewController *vc = [[UIViewController alloc] init];
     vc.view.backgroundColor = [UIColor blackColor];
 
-    /* 一个最简 UILabel，用于确认界面真的画上去了 */
-    UILabel *label = [[UILabel alloc] init];
-    label.text = @"MusicFree\nCarPlay Window Path OK";
-    label.numberOfLines = 0;
-    label.textAlignment = NSTextAlignmentCenter;
-    label.textColor = [UIColor whiteColor];
-    label.translatesAutoresizingMaskIntoConstraints = NO;
-    [vc.view addSubview:label];
+    UILabel *title = [[UILabel alloc] init];
+    title.text = (sheets.count > 0)
+        ? [NSString stringWithFormat:@"MusicFree · 歌单 (%lu)", (unsigned long)sheets.count]
+        : @"MusicFree · 暂无歌单";
+    title.font = [UIFont boldSystemFontOfSize:22.0];
+    title.textColor = [UIColor whiteColor];
+    title.translatesAutoresizingMaskIntoConstraints = NO;
+    [vc.view addSubview:title];
+
+    /*
+     * 歌单逐条渲染成 UILabel 行（不依赖 UITableView 的 dataSource 协议，
+     * 保持实现最小、无第三方依赖、也不引入 UITableViewCell 复用逻辑）。
+     */
+    NSMutableArray<UILabel *> *rows = [NSMutableArray array];
+    NSUInteger maxRows = MIN(sheets.count, (NSUInteger)8);
+    for (NSUInteger k = 0; k < maxRows; k++) {
+        NSDictionary *s = sheets[k];
+        NSString *name = [s[@"title"] isKindOfClass:[NSString class]] ? s[@"title"] : @"未命名歌单";
+        id cnt = s[@"count"];
+        NSString *line = [cnt isKindOfClass:[NSNumber class]]
+            ? [NSString stringWithFormat:@"%lu. %@  (%@ 首)", (unsigned long)(k + 1), name, cnt]
+            : [NSString stringWithFormat:@"%lu. %@", (unsigned long)(k + 1), name];
+
+        UILabel *row = [[UILabel alloc] init];
+        row.text = line;
+        row.font = [UIFont systemFontOfSize:18.0];
+        row.textColor = [UIColor whiteColor];
+        row.translatesAutoresizingMaskIntoConstraints = NO;
+        [vc.view addSubview:row];
+        [rows addObject:row];
+    }
+
+    if (rows.count == 0) {
+        UILabel *empty = [[UILabel alloc] init];
+        empty.text = @"请在手机端导入或创建歌单";
+        empty.font = [UIFont systemFontOfSize:18.0];
+        empty.textColor = [UIColor whiteColor];
+        empty.translatesAutoresizingMaskIntoConstraints = NO;
+        [vc.view addSubview:empty];
+        [rows addObject:empty];
+    }
+
+    /* 标题固定在顶部，行依次向下排 */
     [NSLayoutConstraint activateConstraints:@[
-        [label.centerXAnchor constraintEqualToAnchor:vc.view.centerXAnchor],
-        [label.centerYAnchor constraintEqualToAnchor:vc.view.centerYAnchor],
-        [label.widthAnchor constraintLessThanOrEqualToAnchor:vc.view.widthAnchor
-                                                   constant:-40],
+        [title.topAnchor constraintEqualToAnchor:vc.view.topAnchor constant:40],
+        [title.leadingAnchor constraintEqualToAnchor:vc.view.leadingAnchor constant:32],
     ]];
+    UIView *prev = title;
+    for (UILabel *row in rows) {
+        [NSLayoutConstraint activateConstraints:@[
+            [row.topAnchor constraintEqualToAnchor:prev.bottomAnchor constant:18],
+            [row.leadingAnchor constraintEqualToAnchor:vc.view.leadingAnchor constant:32],
+            [row.trailingAnchor constraintLessThanOrEqualToAnchor:vc.view.trailingAnchor constant:-32],
+        ]];
+        prev = row;
+    }
 
     win.rootViewController = vc;
     [win makeKeyAndVisible];
 
-    MFCarPlayLogBoth(@"SCENE willConnect: WINDOW PATH ACTIVE "
-                     @"window=%p frame=%@ sceneClass=%@",
+    MFCarPlayLogBoth(@"SCENE willConnect: WINDOW PATH ACTIVE window=%p frame=%@ "
+                     @"sceneClass=%@ sheets=%lu rendered=%lu",
           (__bridge void *)win,
           NSStringFromCGRect(windowScene.coordinateSpace.bounds),
-          sceneClass);
+          sceneClass,
+          (unsigned long)sheets.count,
+          (unsigned long)rows.count);
 }
 
 - (CPInterfaceController *)interfaceControllerFromScene:(UIScene *)scene {

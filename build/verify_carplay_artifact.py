@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142640"
+EXPECTED_VERSION = "11142641"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -90,6 +90,8 @@ BINARY_MARKERS = [
     b"scene config -> delegate to Info.plist for role=%@",
     b"SCENE willConnect class=%@ role=%@ mainThread=%d",
     b"SCENE willConnect: WINDOW PATH ACTIVE",
+    b"SCENE willConnect: WINDOW PATH ACTIVE window=%p frame=%@ ",
+    b"sheets=%lu rendered=%lu",
 ]
 
 # 旧版已证伪/致命的标记，产物里绝不能再出现

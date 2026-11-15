@@ -340,6 +340,30 @@ chk("CI 推送列表包含 CarPlaySceneDelegate.h",
 chk("CI 推送列表包含 CarPlaySceneDelegate.m",
     "CarPlaySceneDelegate.m" in _ci)
 
+# ============ 11142641：移除 carplay-audio，改走 UIWindowScene 路径 ============
+# 十轮实测：声明 carplay-audio 时 carplayd 强制分配模板 role，
+# 而模板路径在 TrollStore 假签名下 templates 恒为 0。
+# CarMovie 二进制实证：0 次 CarPlay 框架调用，纯 UIWindowSceneDelegate + UIKit。
+_ent = io.open(os.path.join(ROOT, "scripts", "trollstore.entitlements.plist"),
+               encoding="utf-8").read()
+import plistlib as _pl
+_entd = _pl.loads(_ent.encode("utf-8"))
+chk("★ 已移除 com.apple.developer.carplay-audio",
+    "com.apple.developer.carplay-audio" not in _entd)
+chk("application-identifier 保留",
+    _entd.get("application-identifier") == "app.musicfree.ios")
+chk("team-identifier 保留",
+    _entd.get("com.apple.developer.team-identifier") == "TROLLTROLL")
+chk("无 get-task-allow（避免 Developer Mode 强制）",
+    "get-task-allow" not in _entd)
+chk("window 路径渲染真实歌单（用 [self sheets]）",
+    "[self sheets]" in cm and "WINDOW PATH ACTIVE" in cm)
+chk("window 路径用 UIFont 排版",
+    "boldSystemFontOfSize" in cm)
+chk("CI 推送列表包含 entitlements plist",
+    "trollstore.entitlements.plist" in
+    io.open(os.path.join(ROOT, "build", "ci_push_and_build.ps1"), encoding="utf-8").read())
+
 print("=" * 50)
 print("Phase 1 static check:", "ALL PASS" if ok else "FAILED")
 sys.exit(0 if ok else 1)
