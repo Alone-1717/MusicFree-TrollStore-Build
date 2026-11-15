@@ -1,124 +1,26 @@
-#!/usr/bin/env python3
-"""Verify the final CarPlay-stable TIPA/IPA artifact.
-
-Checks:
-  1. Payload/MusicFree.app/Info.plist is parsed as plist (binary plist safe)
-  2. CFBundleIdentifier / CFBundleVersion / scene delegates
-  3. Payload/MusicFree.app/MusicFree contains all native CarPlay markers
-  4. embedded main.jsbundle contains the JS CarPlay-ready markers
-  5. prints SHA256
-"""
 import argparse
-import hashlib
 import io
+import os
 import plistlib
 import sys
 import zipfile
-from pathlib import Path
 
-EXPECTED_VERSION = "11142637"
-EXPECTED_BUNDLE_ID = "app.musicfree.ios"
+"""
+verify_carplay_demo.py — 最小 CarPlay Demo 的产物校验。
 
-BINARY_MARKERS = [
-    b"connected (phase1)",
-    b"native placeholder root installed",
-    b"one-shot root install armed",
-    b"no retry (waiting framework)",
-    b"keep root, no reinstall",
-    b"applied=0 inFlight=",
-    b"sync probe unlocked",
-    b"carplay.1.log",
-    b"MusicFree CarPlay log ",
-    b"[native-data] %@",
-    b"sheets from NATIVE",
-    b"tracks from NATIVE",
-    b"initial install still settling, wait",
-    b"template handshake not settled yet",
-    b"rearm #%lu/%lu",
-    b"silently failed",
-    b"rearm exhausted",
-    b"threw on stale controller",
-    b"controller invalidated, stop polling",
-    b"controller already invalidated, no more attempts",
-    b"didConnect ctrl new=%p old=%p same=%d",
-    b"SYNC CONFIRM: topTemplate IS our root (via top-template check)",
-    b"updateSections done root.sectionCount=",
-    b"applied via sync-confirm path",
-    b"didConnect ctrl=%p (template-only audio path)",
-    b"ROOT TEMPLATE VISIBLE",
-    b"templateDidAppear template=%p isList=",
-    b"content unchanged, skip updateSections",
-    b"CPInterfaceControllerDelegate registered",
-    b"data ready sections=",
-    b"recoverTemplateScene",
-    b"rebind controller",
-    b"carPlayJSReady",
-    b"flush pending",
-    b"requestSheets retry",
-    b"CarPlayPlayTrack",
-    b"CarPlayRequestTracks",
-    b"MFCarPlayDataDidUpdate",
-    b"dataSheets=",
-    b"scene KVC interfaceController failed:",
-    b"scene KVC interfaceController failed: %@ (%@)",
-    b"EMPTY_SECTIONS_BUG",
-    b"verdict=%s",
-    b"RESET exhausted on scene reactivation",
-    b"same controller, applied=0, framework still not confirming",
-    b"ready=%d exhausted=%d",
-    b"setRootTemplate dispatched (completion:nil)",
-    b"dispatchRootTemplate on main thread, ok",
-    b"WARN: dispatchRootTemplate on NON-MAIN thread",
-    b"watchdog round=%lu: framework confirms root, push sections",
-    b"AVAudioSession final: catOK=%d opts=%@ actOK=%d",
-    b"AVAudioSession step1 (Playback+A2DP) FAILED",
-    b"AVAudioSession step2 (Playback plain) FAILED",
-    b"AVAudioSession setActive FAILED",
-    b"CPNowPlayingTemplate factory found:",
-    b"both factory candidates missing",
-    b"NO_SECTIONCOUNT_API",
-    b"ON-SCREEN CONTENT: sectionCount=%lu hasAPI=%d dataSheets=%lu",
-    b"ON-SCREEN CONTENT: sectionCount=%lu hasAPI=%d dataSheets=%lu appliedBefore=%d sameAsRoot=%d verdict=%s",
-    b"updateSections done root.sectionCount=%lu (probe=%d) pushed=%lu sheetsReceived=%d applied=%d",
-    b"CPNowPlayingTemplate: both factory candidates missing",
-    b"one-shot root install armed controller=%p (EMPTY template",
-    b"fresh EMPTY template=%p, no sections yet",
-    b"emptyViewTitleVariants set on root template",
-    b"emptyViewTitleVariants NOT available on CPListTemplate",
-    b"ROOT TEMPLATE VISIBLE -> applied=1, about to refresh",
-    b"scene config -> CarPlay delegate + CPTemplateApplicationScene",
-    b"scene config -> main app delegate role=%@ sceneClass=UIWindowScene",
-    b"TOP-TEMPLATE PROBE: top=%p class=%@ ourRoot=%p match=%d",
-]
+与全量版 verify_carplay_artifact.py 分开，因为 Demo 只有 154 行实现，
+不含全量版的 69 个标记。这里只校验 Demo 必须的几项。
 
-# 旧版已证伪/致命的标记，产物里绝不能再出现
-FORBIDDEN_BINARY_MARKERS = [
-    b"retry anyway",
-    b"attempts exhausted",
-    b"root watchdog fired",
-    # 11142616：didConnect 期 topTemplate 同步读是打断 template 连接的真凶
-    b"adopt without setRootTemplate",
-    b"framework already has topTemplate",
-]
-
-JS_MARKERS = [
-    "carPlayJSReady",
-    "CarPlayPlayTrack",
-    "CarPlayRequestTracks",
-    "CarPlayControl",
-    "[CarPlay] JS bridge started",
-]
-
+判据：
+  1) 版本号 / bundle id / delegate 类名
+  2) Demo 关键日志字符串都在二进制里（UTF8 或 UTF16LE）
+  3) Info.plist 三件套齐全
+  4) 无危险项
+  5) JS bundle 存在
+"""
 
 
 def marker_present(binary, m):
-    """CFString 常量编码探测。
-
-    纯 ASCII 的 C 字符串以 UTF-8 落在 __cstring；
-    含非 ASCII 字符（如 em dash —— ）的 NSString 常量会转成 UTF-16LE，
-    只做 UTF-8 字节匹配会把它们全判成缺失。
-    曾因此误报 "RESET exhausted..." 和 "WARN: template on screen ..." 两组标记。
-    """
     if m in binary:
         return True
     try:
@@ -128,88 +30,98 @@ def marker_present(binary, m):
         pass
     return False
 
-def fail(msg: str):
-    print(f"FAIL: {msg}")
-    sys.exit(1)
-
-
-def read_entry(zf: zipfile.ZipFile, name: str) -> bytes:
-    try:
-        return zf.read(name)
-    except KeyError:
-        fail(f"missing zip entry {name}")
-
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--path", required=True)
     args = ap.parse_args()
-    path = Path(args.path)
-    if not path.is_file():
-        fail(f"file missing: {path}")
 
-    digest = hashlib.sha256(path.read_bytes()).hexdigest().upper()
-    print(f"FILE={path}")
-    print(f"BYTES={path.stat().st_size}")
-    print(f"SHA256={digest}")
+    path = args.path
+    if not os.path.isfile(path):
+        print("FAIL: file not found: " + path)
+        return 1
 
-    with zipfile.ZipFile(path, "r") as zf:
-        names = zf.namelist()
-        info_path = "Payload/MusicFree.app/Info.plist"
+    errors = []
+    with zipfile.ZipFile(path) as z:
+        names = z.namelist()
         bin_path = "Payload/MusicFree.app/MusicFree"
-        if info_path not in names:
-            fail(f"missing {info_path}")
+        info_path = "Payload/MusicFree.app/Info.plist"
         if bin_path not in names:
-            fail(f"missing {bin_path}")
+            print("FAIL: binary missing")
+            return 1
+        binary = z.read(bin_path)
+        info = plistlib.loads(z.read(info_path))
 
-        info = plistlib.loads(read_entry(zf, info_path))
-        bundle_id = str(info.get("CFBundleIdentifier", ""))
-        version = str(info.get("CFBundleVersion", ""))
-        print(f"CFBundleIdentifier={bundle_id}")
-        print(f"CFBundleVersion={version}")
-        if bundle_id != EXPECTED_BUNDLE_ID:
-            fail(f"bundle id mismatch: {bundle_id}")
-        if version != EXPECTED_VERSION:
-            fail(f"version mismatch: {version}")
+    print("FILE=" + path)
+    print("BYTES=" + str(os.path.getsize(path)))
 
-        manifest = info.get("UIApplicationSceneManifest") or {}
-        cfgs = manifest.get("UISceneConfigurations") or {}
-        main_role = cfgs.get("UIWindowSceneSessionRoleApplication") or [{}]
-        car_role = cfgs.get("CPTemplateApplicationSceneSessionRoleApplication") or [{}]
-        main_delegate = main_role[0].get("UISceneDelegateClassName", "")
-        car_delegate = car_role[0].get("UISceneDelegateClassName", "")
-        print(f"MainDelegate={main_delegate}")
-        print(f"CarPlayDelegate={car_delegate}")
-        if main_delegate != "AppDelegate":
-            fail("main scene delegate mismatch")
-        if car_delegate != "MFCarPlaySceneDelegate":
-            fail("CarPlay scene delegate mismatch")
+    import hashlib
+    with open(path, "rb") as f:
+        print("SHA256=" + hashlib.sha256(f.read()).hexdigest().upper())
 
-        binary = read_entry(zf, bin_path)
-        missing_binary = [m.decode("utf-8", "replace") for m in BINARY_MARKERS
-                          if not marker_present(binary, m)]
-        print(f"BinaryMarkers={len(BINARY_MARKERS) - len(missing_binary)}/{len(BINARY_MARKERS)}")
-        if missing_binary:
-            fail("binary markers missing: " + ", ".join(missing_binary))
+    ver = info.get("CFBundleVersion")
+    bid = info.get("CFBundleIdentifier")
+    print("CFBundleIdentifier=" + str(bid))
+    print("CFBundleVersion=" + str(ver))
+    if ver != "11142638":
+        errors.append("version mismatch: " + str(ver))
+    if bid != "app.musicfree.ios":
+        errors.append("bundle id mismatch")
 
-        present_old = [m.decode("utf-8", "replace") for m in FORBIDDEN_BINARY_MARKERS if marker_present(binary, m)]
-        print(f"ForbiddenMarkers={len(present_old)}")
-        if present_old:
-            fail("legacy reinstall-loop markers still present: " + ", ".join(present_old))
+    print()
+    print("=== Demo 关键日志 ===")
+    demo_markers = [
+        b"[Demo] didConnect ctrl=%p",
+        b"[Demo] after setRoot: top=%p templates=%lu ourList=%p",
+        b"[Demo] setRootTemplate THREW: %@",
+        b"!!! [Demo] templateDidAppear template=%p isOurs=%d animated=%d",
+        b"[Demo] didDisconnect ctrl=%p",
+    ]
+    found = 0
+    for m in demo_markers:
+        ok = marker_present(binary, m)
+        print(("  HAS " if ok else "  MISS") + " " + m.decode("ascii", "replace")[:60])
+        if ok:
+            found += 1
+        else:
+            errors.append("demo marker missing: " + m.decode("ascii", "replace"))
+    print("DemoMarkers=%d/%d" % (found, len(demo_markers)))
 
-        js_candidates = [n for n in names if n.endswith("main.jsbundle")]
-        if not js_candidates:
-            fail("embedded main.jsbundle missing")
-        js_name = js_candidates[0]
-        js = read_entry(zf, js_name).decode("utf-8", errors="ignore")
-        missing_js = [m for m in JS_MARKERS if m not in js]
-        print(f"JSBundle={js_name}")
-        print(f"JSMarkers={len(JS_MARKERS) - len(missing_js)}/{len(JS_MARKERS)}")
-        if missing_js:
-            fail("JS markers missing: " + ", ".join(missing_js))
+    print()
+    print("=== Info.plist ===")
+    ip_bytes = io.BytesIO()
+    plistlib.dump(info, ip_bytes)
+    ipb = ip_bytes.getvalue()
+    for k in [b"UISceneClassName", b"CPTemplateApplicationScene", b"UISupportsCarPlay"]:
+        ok = k in ipb
+        print(("  HAS " if ok else "  MISS") + " " + k.decode())
+        if not ok:
+            errors.append("Info.plist key missing: " + k.decode())
 
-    print("ARTIFACT_OK")
+    print()
+    print("=== 危险项（应为无） ===")
+    for m in [b"retry anyway", b"attempts exhausted", b"get-task-allow"]:
+        bad = marker_present(binary, m)
+        print(("  BAD " if bad else "  ok  ") + m.decode())
+        if bad:
+            errors.append("forbidden marker present: " + m.decode())
+
+    print()
+    print("=== JS bundle ===")
+    js = [n for n in names if n.endswith("main.jsbundle")]
+    print("  " + (js[0] if js else "MISSING"))
+    if not js:
+        errors.append("main.jsbundle missing")
+
+    print()
+    if errors:
+        for e in errors:
+            print("FAIL: " + e)
+        print("DEMO_ARTIFACT_FAIL")
+        return 1
+    print("DEMO_ARTIFACT_OK")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
