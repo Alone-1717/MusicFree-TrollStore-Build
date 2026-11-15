@@ -1354,15 +1354,47 @@ static id<NSObject> sDataObserverToken = nil;
      *
      * 只打一次（_topProbeLogged），避免 watchdog 每轮刷屏。
      */
+    /*
+     * ============ 11142637：把 topTemplate 的真实内容打出来 ============
+     *
+     * 十轮排查里最大的诊断盲点：这个方法过去只在 top == _rootList 时
+     * 打一条 SYNC CONFIRM，否则**静默返回 NO**。
+     * 于是我们从来不知道 topTemplate 到底是什么 ——
+     * 是 nil？是系统自带的某个模板？还是读它本身就返回空？
+     *
+     * 本探针无条件执行（不受 _rootApplied 闸门影响），只打一次防刷屏。
+     *
+     * 线程说明：所有调用者都在主线程 ——
+     *   watchdog 用 dispatch_after(dispatch_get_main_queue(), ...)，
+     *   templateDidAppear / refreshRootSections 也都是主线程回调。
+     *   仍在日志里带 isMainThread，万一将来有后台调用能立刻发现。
+     *
+     * 输出解读：
+     *   top=0x0  class=(nil)          -> controller 从没成功提交过任何模板
+     *   match=0  templates>0          -> 有模板但不是我们的（框架占了 root）
+     *   match=1                       -> 我们的模板是 top，但 didAppear 没来
+     *   class=CPNowPlayingTemplate    -> 系统模板占了 root
+     */
     if (!_topProbeLogged) {
         _topProbeLogged = YES;
-        MFCarPlayLogBoth(@"TOP-TEMPLATE PROBE: top=%p class=%@ ourRoot=%p match=%d "
-                         @"templates=%lu",
+
+        NSArray *tmpls = ic.templates;
+        NSMutableString *desc = [NSMutableString string];
+        for (NSUInteger k = 0; k < tmpls.count; k++) {
+            id tk = tmpls[k];
+            [desc appendFormat:@"%@(%p) ",
+                NSStringFromClass([tk class]), (__bridge void *)tk];
+        }
+
+        MFCarPlayLogBoth(@"TOP-TEMPLATE PROBE: mainThread=%d top=%p class=%@ ourRoot=%p "
+                         @"match=%d templates=%lu [%@]",
+              (int)[NSThread isMainThread],
               (__bridge void *)top,
               top ? NSStringFromClass([top class]) : @"(nil)",
               (__bridge void *)_rootList,
-              (top && top == _rootList),
-              (unsigned long)(ic.templates ? ic.templates.count : 0));
+              (int)(top && top == _rootList),
+              (unsigned long)tmpls.count,
+              desc.length ? desc : @"(empty)");
     }
 
     if (_rootList && top == _rootList) {
