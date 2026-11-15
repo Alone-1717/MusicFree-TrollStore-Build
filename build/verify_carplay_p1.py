@@ -77,8 +77,11 @@ chk("installRootIfNeeded 内零 topTemplate 同步读",
     "topTemplate" not in _install_body)
 chk("didConnect 内零 topTemplate 同步读",
     _attach_body != "" and "topTemplate" not in _attach_body)
-chk("didConnect 异步化（不阻塞握手）",
-    "dispatch_async" in _attach_body)
+# 11142619 修正：setRootTemplate 必须在 didConnect 内同步发起。
+# 推迟到 dispatch_async 会让框架"同步取模板"失败 -> Connection interrupted。
+chk("didConnect 内同步发起 root 安装（不 dispatch_async 延迟）",
+    "installRootIfNeeded" in _attach_body
+    and "dispatch_async" not in _attach_body)
 chk("watchdog 第一轮解锁同步探针",
     "sync probe unlocked" in cm_code and "_templateReady = YES" in cm_code)
 # --- 受限 rearm 规格（3s 窗口 / 2 次上限 / 静默失败计数 / exhausted 停止） ---

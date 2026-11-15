@@ -272,20 +272,33 @@ static id<NSObject> sDataObserverToken = nil;
     [self registerDataObserverIfNeeded];
 
     /*
-     * 关键修复：让 didConnect 立刻返回，握手事务干净结算。
-     * 下一轮 runloop 才碰 controller（此时仍不读 topTemplate，
-     * 只调异步的 setRootTemplate:）。
+     * ==================== 关键修复（11142619 之后） ====================
+     *
+     * 之前的错误：这里用 dispatch_async 把 installRootIfNeeded 推到下一轮
+     * runloop，理由是"让握手先结算"。这个判断是错的，日志给出了反证：
+     *
+     *   [MusicFree][CarPlay] data observer registered        <- didConnect 最后一句
+     *   <Error> Connection interrupted                       <- 框架放弃
+     *   <Error> Error accessing synchronous template provider <- 框架取不到模板
+     *   [MusicFree][CarPlay] one-shot root install armed     <- 我的 async 才刚跑
+     *
+     * 即：框架在 didConnect 返回后**立刻同步来要 root template**。
+     * 我把它推迟到下一轮 runloop，框架等不到，于是判超时并 invalidate 连接。
+     * `Error accessing synchronous template provider` 就是"同步取模板失败"。
+     *
+     * 正确做法（也是 CarPlay 官方行为）：
+     *   **必须在 didConnect 返回前、同步调用 setRootTemplate:。**
+     *   该调用本身是异步的（带 completion），不会阻塞握手；
+     *   但"发起"这个动作必须发生在 didConnect 内。
+     *
+     * 同时保持原有的两条铁律：
+     *   1) 不读任何同步属性（topTemplate / rootTemplate）——那才是 11142615 的真凶
+     *   2) 一个 controller 只发一次 setRootTemplate
+     * ==================================================================
      */
-    __weak __typeof(self) weakSelf = self;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        __strong __typeof(weakSelf) self = weakSelf;
-        if (!self || self.interfaceController != interfaceController) {
-            return;
-        }
-        [self installRootIfNeeded];
-        [self requestSheetsNow];
-        [self scheduleRequestSheetsRetries];
-    });
+    [self installRootIfNeeded];
+    [self requestSheetsNow];
+    [self scheduleRequestSheetsRetries];
 }
 
 #pragma mark - UIScene 生命周期（只重绑，不重装）
@@ -338,15 +351,9 @@ static id<NSObject> sDataObserverToken = nil;
         _rootGeneration += 1;          /* 作废旧 controller 的在途 completion */
         _controllerInvalidated = NO;   /* 新 controller 视为有效 */
         [self registerDataObserverIfNeeded];
-        __weak __typeof(self) weakSelf = self;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            __strong __typeof(weakSelf) self = weakSelf;
-            if (!self || self.interfaceController != sceneIC) {
-                return;
-            }
-            [self installRootIfNeeded];
-            [self requestSheetsNow];
-        });
+        /* 同 didConnect：必须同步发起，不能推迟到下一轮 runloop（见 attach 内说明） */
+        [self installRootIfNeeded];
+        [self requestSheetsNow];
         return;
     }
 
