@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142632"
+EXPECTED_VERSION = "11142633"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -40,8 +40,6 @@ BINARY_MARKERS = [
     b"threw on stale controller",
     b"controller invalidated, stop polling",
     b"controller already invalidated, no more attempts",
-    b"rearm succeeded, repush sections to fresh template",
-    b"initial root succeeded, push sections",
     b"didConnect ctrl new=%p old=%p same=%d",
     b"SYNC CONFIRM: topTemplate IS our root (via top-template check)",
     b"ON-SCREEN CONTENT: sectionCount=",
@@ -73,10 +71,14 @@ BINARY_MARKERS = [
     b"same controller, applied=0, framework still not confirming",
     b"ready=%d exhausted=%d",
     b"setRootTemplate dispatched (completion:nil)",
-    b"AVAudioSession setCategory(Playback)",
     b"ON-SCREEN CONTENT: sectionCount=%lu dataSheets=%lu",
     b"dispatchRootTemplate on main thread, ok",
     b"WARN: dispatchRootTemplate on NON-MAIN thread",
+    b"watchdog round=%lu: framework confirms root, push sections",
+    b"AVAudioSession final: catOK=%d opts=%@ actOK=%d",
+    b"AVAudioSession step1 (Playback+A2DP) FAILED",
+    b"AVAudioSession step2 (Playback plain) FAILED",
+    b"AVAudioSession setActive FAILED",
 ]
 
 # 旧版已证伪/致命的标记，产物里绝不能再出现

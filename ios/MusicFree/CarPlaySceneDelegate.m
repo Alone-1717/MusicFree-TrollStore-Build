@@ -508,14 +508,96 @@ static id<NSObject> sDataObserverToken = nil;
      * 这里补一次幂等的类别声明，让 carplayd 在模板提交之前就能看到
      * "这是一个 playback 类音频 App"。失败不影响主流程（有 @try 兜住）。
      */
+    /*
+     * ============ 11142633：修 OSStatus -50 ============
+     *
+     * 11142632 真机日志：
+     *   AVAudioSession setCategory(Playback) ok=0 err=OSStatus -50
+     *
+     * -50 是 paramErr。原因是 AVAudioSessionCategoryOptionAllowBluetooth
+     * （HFP）**只对 PlayAndRecord / Record 合法**，Playback 类别下传它直接
+     * 参数错误。Playback 要走 A2DP，因此正确选项是 AllowBluetoothA2DP。
+     *
+     * 也就是说：11142632 这一版，整个 CarPlay 会话里音频类别**从未设置成功**。
+     *
+     * 为什么这条重要：CarPlay 的模板通道与音频通道虽独立，但 App 必须被系统
+     * 认定为完整的音频 App。参考实现（missuo/kumone）在 didConnect 第一件事
+     * 就是初始化 PlayerService —— 注释原文是
+     *   "Force PlayerService to initialize (sets up the audio session and remote commands)"
+     * 即它确实配置了会话，只是封装在服务内部。
+     *
+     * 本次改动：
+     *   1) 选项改为 AllowBluetoothA2DP（Playback 合法）
+     *   2) 补 setActive:YES —— 只设 category 不激活，会话仍是未就绪状态
+     *   3) 回读 category / isActive 打进日志，便于确认真的生效
+     */
+    /*
+     * ============ 11142633：音频会话必须真正配置成功 ============
+     *
+     * 11142632 真机日志：
+     *   AVAudioSession setCategory(Playback) ok=0 err=OSStatus -50
+     *
+     * -50 = paramErr。原因：AVAudioSessionCategoryOptionAllowBluetooth（HFP）
+     * **只对 PlayAndRecord / Record 合法**，在 Playback 类别下传它直接参数错误。
+     * 也就是说 11142632 这一版，整个 CarPlay 会话里音频类别从未生效。
+     *
+     * 为什么这条可能是根因：CarPlay 的模板通道与音频通道虽独立，
+     * 但系统要求音频 App 必须处于"可播放"状态。参考实现
+     * （missuo/kumone）在 didConnect 第一件事就是
+     *     _ = PlayerService.shared
+     * 注释原文：Force PlayerService to initialize
+     *           (sets up the audio session and remote commands)
+     * 即它确实在模板提交前把会话配置好了，只是封装在服务内部。
+     *
+     * 本实现三级降级，保证"至少有一级成功"，并把每一级结果都打进日志：
+     *   1) Playback + AllowBluetoothA2DP  —— 无线 CarPlay 走 A2DP，首选
+     *   2) Playback + 无选项               —— 最保守，几乎必定成功
+     *   3) 只 setActive:YES                —— 类别已在别处设好时兜底
+     * 这样下一版日志无论看到哪一级成功，都能确定音频层状态。
+     */
     @try {
         AVAudioSession *session = [AVAudioSession sharedInstance];
-        NSError *setErr = nil;
-        BOOL ok = [session setCategory:AVAudioSessionCategoryPlayback
-                           withOptions:AVAudioSessionCategoryOptionAllowBluetooth
-                                 error:&setErr];
-        MFCarPlayLogBoth(@"AVAudioSession setCategory(Playback) ok=%d err=%@ (before root install)",
-              ok, setErr.localizedDescription ?: @"(nil)");
+        NSError *err = nil;
+        BOOL catOK = NO;
+        NSString *usedOptions = @"(none)";
+
+        catOK = [session setCategory:AVAudioSessionCategoryPlayback
+                         withOptions:AVAudioSessionCategoryOptionAllowBluetoothA2DP
+                               error:&err];
+        if (catOK) {
+            usedOptions = @"AllowBluetoothA2DP";
+        } else {
+            MFCarPlayLogBoth(@"AVAudioSession step1 (Playback+A2DP) FAILED err=%@ (%ld)",
+                  err.localizedDescription ?: @"(nil)", (long)err.code);
+            err = nil;
+            catOK = [session setCategory:AVAudioSessionCategoryPlayback
+                             withOptions:0
+                                   error:&err];
+            if (catOK) {
+                usedOptions = @"none";
+            } else {
+                MFCarPlayLogBoth(@"AVAudioSession step2 (Playback plain) FAILED err=%@ (%ld)",
+                      err.localizedDescription ?: @"(nil)", (long)err.code);
+                err = nil;
+            }
+        }
+
+        NSError *actErr = nil;
+        BOOL actOK = [session setActive:YES withOptions:0 error:&actErr];
+        if (!actOK) {
+            MFCarPlayLogBoth(@"AVAudioSession setActive FAILED err=%@ (%ld)",
+                  actErr.localizedDescription ?: @"(nil)", (long)actErr.code);
+        }
+
+        /*
+         * 回读真实状态：category / isActive 才是系统认定的事实，
+         * 不依赖我们调用时的返回值。
+         */
+        MFCarPlayLogBoth(@"AVAudioSession final: catOK=%d opts=%@ actOK=%d "
+                         @"| readback category=%@ active=%d (before root install)",
+              catOK, usedOptions, actOK,
+              session.category ?: @"(nil)",
+              (int)session.isActive);
     } @catch (NSException *e) {
         MFCarPlayLogBoth(@"AVAudioSession setup threw: %@", e.reason);
     }
@@ -1037,7 +1119,7 @@ static id<NSObject> sDataObserverToken = nil;
      * 保留 token / generationAtDispatch 是为了日志里区分首发与 rearm。
      */
     @try {
-        [ic setRootTemplate:list animated:NO completion:nil];
+        [ic setRootTemplate:list animated:YES completion:nil];
         MFCarPlayLogBoth(@"setRootTemplate dispatched (completion:nil) gen=%lu rearm=%lu template=%p",
               (unsigned long)token, (unsigned long)generationAtDispatch,
               (__bridge void *)list);
