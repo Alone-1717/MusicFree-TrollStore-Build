@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142623"
+EXPECTED_VERSION = "11142626"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -46,8 +46,12 @@ BINARY_MARKERS = [
     b"rearm succeeded, repush sections to fresh template",
     b"initial root succeeded, push sections",
     b"didConnect ctrl new=%p old=%p same=%d",
-    b"didConnect WITH CPWindow=%p ctrl=%p",
-    b"carWindow attached & key",
+    b"didConnect ctrl=%p (template-only audio path)",
+    b"ROOT TEMPLATE VISIBLE",
+    b"templateDidAppear template=%p isList=",
+    b"setRootTemplate FAILED localized=",
+    b"content unchanged, skip updateSections",
+    b"CPInterfaceControllerDelegate registered",
     b"pushing anyway",
     b"data ready sections=",
     b"applied via framework check",

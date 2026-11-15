@@ -124,6 +124,7 @@ static id<NSObject> sDataObserverToken = nil;
 - (void)recoverTemplateScene:(UIScene *)scene reason:(NSString *)reason;
 - (void)refreshRootSections;
 - (void)applySectionsToRootTemplate:(NSArray<CPListSection *> *)sections;
+- (NSString *)sectionsFingerprint:(NSArray<CPListSection *> *)sections;
 - (void)pushTracksForSheet:(NSString *)sheetId title:(NSString *)title;
 - (NSArray<CPListItem *> *)buildTrackItems:(NSArray<NSDictionary *> *)tracks
                                     sheetId:(NSString *)sheetId;
@@ -169,60 +170,98 @@ static id<NSObject> sDataObserverToken = nil;
     BOOL _nativeDataLogged;
     /* 缓存最近一次准备好的 sections，供 root 被接受后补推 */
     NSArray<CPListSection *> *_lastSections;
+    /* 上一次真正推送给 updateSections: 的内容指纹，用于去重防闪烁 */
+    NSString *_lastPushedFingerprint;
     /* 已经对哪个 controller 调用过 setRootTemplate（一个 controller 只准一次） */
     __weak CPInterfaceController *_rootInstalledFor;
+    /* 已经给哪个 controller 注册过 delegate（一个 controller 只注册一次） */
+    __weak CPInterfaceController *_delegateRegisteredFor;
     __weak CPTemplateApplicationScene *_templateScene;
 }
 
 #pragma mark - CPTemplateApplicationSceneDelegate
 
 /*
- * 必须同时实现两个签名：
+ * 音频 App 只实现这一个（模板路径）。
  *
- *   didConnectInterfaceController:toWindow:   ← iOS 14+ 正式签名（带 CPWindow）
- *   didConnectInterfaceController:            ← 旧签名 / 兜底
+ * 为什么不实现 didConnectInterfaceController:toWindow:：
+ *   那个方法属于**导航类 App**。本项目 entitlement 只有 carplay-audio，
+ *   系统按模板路径分配场景，永远不会给 CPWindow。
  *
- * 11142621 日志证明系统走的是不带 window 的那条（框架 Notice:
- * "App supports CPTemplateApplicationScene method without window"），
- * 于是我们从来没拿到过 CPWindow —— 模板提交了却没有渲染宿主，
- * 表现就是车机黑屏 + 音频正常。
+ *   之前实现它、持有它、还想挂 rootViewController —— 全是死代码，
+ *   而且引入过两个真实错误：
+ *     - 把 CPTemplateApplicationScene 强转成 UIWindowScene（未定义行为）
+ *     - 想给 window.rootViewController 赋 CPInterfaceController（类型不兼容，
+ *       CPInterfaceController 是 NSObject 不是 UIViewController）
+ *   现在彻底移除，少一类状态就少一类黑屏原因。
  *
- * 现在优先实现带 window 的版本：拿到 CPWindow 并强引用它，
- * 再把 window 关联到场景，模板才有地方画。
+ * 真机日志里的
+ *     "App supports CPTemplateApplicationScene method without window"
+ * 是框架陈述**正常状态**，不是缺 window。
  */
 - (void)templateApplicationScene:(CPTemplateApplicationScene *)templateApplicationScene
     didConnectInterfaceController:(CPInterfaceController *)interfaceController
-                        toWindow:(CPWindow *)window API_AVAILABLE(ios(14.0))
 {
-    MFCarPlayLogBoth(@"didConnect WITH CPWindow=%p ctrl=%p",
-          (__bridge void *)window, (__bridge void *)interfaceController);
-
-    /* 强引用 window，否则它会在 runloop 结束后被释放，模板失去宿主 */
-    self.carWindow = window;
-    if (window) {
-        /* CPWindow 是 UIWindow 子类，关联到传入的模板场景 */
-        if (@available(iOS 13.0, *)) {
-            @try {
-                [window setWindowScene:(UIWindowScene *)templateApplicationScene];
-            } @catch (NSException *e) {
-                MFCarPlayLogBoth(@"setWindowScene threw: %@", e.reason);
-            }
-        }
-        [window makeKeyAndVisible];
-        MFCarPlayLogBoth(@"carWindow attached & key, frame=%@",
-              NSStringFromCGRect(window.frame));
-    } else {
-        MFCarPlayLogBoth(@"WARN: CPWindow is nil in toWindow variant");
-    }
-
+    MFCarPlayLogBoth(@"didConnect ctrl=%p (template-only audio path)",
+          (__bridge void *)interfaceController);
     [self attachInterfaceController:interfaceController scene:templateApplicationScene];
 }
 
-- (void)templateApplicationScene:(CPTemplateApplicationScene *)templateApplicationScene
-    didConnectInterfaceController:(CPInterfaceController *)interfaceController
+#pragma mark - CPInterfaceControllerDelegate（模板真的上屏的唯一权威信号）
+
+/*
+ * 本轮最关键的新增。
+ *
+ * 之前判断"root 是否被接受"只有两条不稳的路：
+ *   A) setRootTemplate 的 completion —— 实测从不回调
+ *   B) 轮询 topTemplate           —— 依赖 1.5s 后的同步读，且会抖动
+ *
+ * templateDidAppear:animated: 是框架在模板**真的显示出来**时主动调的。
+ * 它一旦触发，就说明：
+ *   - 模板提交被框架接受
+ *   - 模板类型（CPListTemplate）符合音频 App 要求
+ *   - entitlement 配置正确
+ * 所以它是最强的成功判据，收到即置 _rootApplied 并立刻推内容。
+ */
+- (void)templateDidAppear:(CPTemplate *)template animated:(BOOL)animated
 {
-    MFCarPlayLogBoth(@"didConnect WITHOUT CPWindow (legacy path)");
-    [self attachInterfaceController:interfaceController scene:templateApplicationScene];
+    /*
+     * 用 isKindOfClass 而不是指针相等。
+     *
+     * 原因：rearm 时 installRootIfNeededAllowRearm: 会**新建** CPListTemplate
+     * 并赋给 _rootList（L678）。如果首发模板的 didAppear 在 rearm 之后才到，
+     * template == _rootList 就不成立了，会漏掉这个权威信号。
+     *
+     * 判据放宽为"任何 CPListTemplate 上屏"——对音频 App 来说，出现在这个
+     * delegate 回调里的 CPListTemplate 只可能是我们自己提交的根模板
+     * （子页由 pushTemplate 推入，上屏时也是 CPListTemplate，但此时
+     * _rootApplied 早已为 1，重复置位无害）。
+     */
+    BOOL isList = [template isKindOfClass:[CPListTemplate class]];
+    BOOL isSameObject = (template == (CPTemplate *)_rootList);
+    MFCarPlayLogBoth(@"templateDidAppear template=%p isList=%d sameAsRoot=%d animated=%d applied=%d",
+          (__bridge void *)template, isList, isSameObject, animated, _rootApplied);
+
+    if (isList) {
+        BOOL wasApplied = _rootApplied;
+        _rootApplied = YES;
+        _rootInstallInFlight = NO;
+        _rearmPending = NO;
+        _templateReady = YES;
+        if (!wasApplied) {
+            MFCarPlayLogBoth(@"ROOT TEMPLATE VISIBLE -> applied=1, push content now");
+            [self refreshRootSections];
+        } else {
+            MFCarPlayLogBoth(@"template appeared again, already applied (no re-push)");
+        }
+    }
+}
+
+- (void)templateWillDisappear:(CPTemplate *)template animated:(BOOL)animated
+{
+    if ([template isKindOfClass:[CPListTemplate class]] && template == (CPTemplate *)_rootList) {
+        MFCarPlayLogBoth(@"templateWillDisappear: root");
+    }
 }
 
 - (void)templateApplicationScene:(CPTemplateApplicationScene *)templateApplicationScene
@@ -239,14 +278,20 @@ static id<NSObject> sDataObserverToken = nil;
     if (_rootInstalledFor == interfaceController) {
         _rootInstalledFor = nil;
     }
+    /* 解注册 delegate，避免框架持有已失效的回调目标 */
+    if (_delegateRegisteredFor == interfaceController) {
+        @try {
+            if (interfaceController.delegate == self) {
+                interfaceController.delegate = nil;
+            }
+        } @catch (NSException *e) {
+            MFCarPlayLogBoth(@"clear delegate threw: %@", e.reason);
+        }
+        _delegateRegisteredFor = nil;
+    }
     _templateScene = nil;
     self.interfaceController = nil;
-    /*
-     * 必须清掉 window 引用：重连时框架会创建新的 CPWindow，
-     * 如果这里留着旧的失效引用，新模板会挂到已销毁的 window 上，
-     * 表现又是"提交了但黑屏"。
-     */
-    self.carWindow = nil;
+
     _rootList = nil;
     _currentSheetId = nil;
     _currentSheetTitle = nil;
@@ -300,6 +345,19 @@ static id<NSObject> sDataObserverToken = nil;
      * 所以：didDisconnect 置 YES，didConnect 无条件置 NO，两者严格配对。
      */
     _controllerInvalidated = NO;
+
+    /*
+     * 注册 CPInterfaceControllerDelegate。
+     * templateDidAppear:animated: 是"模板真的上屏"的唯一权威信号，
+     * 用来替代不可靠的 completion 回调和 topTemplate 轮询。
+     * 每个 controller 只注册一次；身份变了要重新注册。
+     */
+    if (_delegateRegisteredFor != interfaceController) {
+        _delegateRegisteredFor = interfaceController;
+        interfaceController.delegate = self;
+        MFCarPlayLogBoth(@"CPInterfaceControllerDelegate registered on ctrl=%p",
+              (__bridge void *)interfaceController);
+    }
 
     /* 新连接（controller 身份变化）：旧的一次性标记全部作废 */
     if (_rootInstalledFor != interfaceController) {
@@ -641,6 +699,22 @@ static id<NSObject> sDataObserverToken = nil;
                                                         sections:bootSections];
     _rootList = list;
 
+    /*
+     * 关键一行：把"首屏模板已带的数据"记进指纹。
+     *
+     * 为什么必须有：
+     *   attachInterfaceController 里紧接着就调 refreshRootSections。
+     *   如果这里不记指纹，_lastPushedFingerprint 还是 nil，去重闸门放行，
+     *   refreshRootSections 会拿同样内容**新建一批 CPListItem 对象**再推一次。
+     *   CarPlay 收到全新对象会当作内容变化重渲染 —— 首屏闪一下、滚动位置重置。
+     *
+     *   记上指纹后，紧随的 refreshRootSections 会打
+     *     "refresh: content unchanged, skip updateSections"
+     *   首屏不闪；后续 templateDidAppear 里的 refresh 同样被挡住；
+     *   只有歌单真的增删改（指纹变化）才重推。
+     */
+    _lastPushedFingerprint = [self sectionsFingerprint:bootSections];
+
     if (allowRearm) {
         MFCarPlayLogBoth(@"rearm #%lu controller=%p (fresh template=%p, sections=%lu)",
               (unsigned long)_rearmCount, (__bridge void *)ic, (__bridge void *)list,
@@ -703,9 +777,31 @@ static id<NSObject> sDataObserverToken = nil;
                                (unsigned long)token, (unsigned long)self->_rootGeneration, success);
                          return;
                      }
-                     MFCarPlayLogBoth(@"setRootTemplate success=%d error=%@ (gen=%lu rearm=%lu)",
-                           success, error.localizedDescription,
-                           (unsigned long)token, (unsigned long)generationAtDispatch);
+                     /*
+                      * 完整打印失败诊断信息。
+                      *
+                      * 只打 localizedDescription 是不够的：它经常是空串或
+                      * 泛化文本，真正的线索在 domain / code / userInfo 里。
+                      * 例如：
+                      *   domain = CPInterfaceControllerErrorDomain + code = 1
+                      *   -> 模板类型不被该 App 类别接受（音频 App 根模板须为
+                      *      CPListTemplate / CPGridTemplate）
+                      *   domain = NSCocoaErrorDomain / kCFErrorDomainCFNetwork
+                      *   -> 提交阶段 XPC 层就失败了
+                      * 这一条日志是"第 5 步不出现"时唯一的直接证据。
+                      */
+                     if (!success) {
+                         MFCarPlayLogBoth(@"setRootTemplate FAILED localized=%@ domain=%@ code=%ld userInfo=%@ (gen=%lu rearm=%lu)",
+                               error.localizedDescription ?: @"(nil)",
+                               error.domain ?: @"(nil)",
+                               (long)error.code,
+                               error.userInfo ?: @{},
+                               (unsigned long)token,
+                               (unsigned long)generationAtDispatch);
+                     } else {
+                         MFCarPlayLogBoth(@"setRootTemplate success=1 error=(null) (gen=%lu rearm=%lu)",
+                               (unsigned long)token, (unsigned long)generationAtDispatch);
+                     }
                      self->_rootInstallInFlight = NO;
                      self->_rearmPending = NO;
                      if (!success) {
@@ -959,7 +1055,7 @@ static id<NSObject> sDataObserverToken = nil;
      * 现在：
      *   第一步 数据准备：**无条件执行**，只读本地（MMKV），不碰任何 CarPlay 状态。
      *                    执行完立刻打日志，这样数据层可以独立验证。
-     *   第二步 UI 提交：才检查 _rootApplied / interfaceController / carWindow。
+     *   第二步 UI 提交：才检查 _rootApplied / interfaceController。
      *                    条件不满足就只缓存，等 root 被接受后补推。
      */
 
@@ -995,15 +1091,65 @@ static id<NSObject> sDataObserverToken = nil;
             return;
         }
     }
-    if (!self.interfaceController || !self.carWindow) {
-        MFCarPlayLogBoth(@"refresh: no interfaceController(%d)/carWindow(%d), skip push",
-              self.interfaceController != nil, self.carWindow != nil);
+    if (!self.interfaceController) {
+        MFCarPlayLogBoth(@"refresh: no interfaceController, skip push");
         return;
     }
 
+    /*
+     * 去重：CarPlay 收到**全新的 CPListItem 对象**会当作列表内容变化重新渲染，
+     * 表现为闪烁、滚动位置丢失。refreshRootSections 有三个调用点
+     * （didConnect / templateDidAppear / completion 成功），必须挡住重复推送。
+     *
+     * 判据用"内容指纹"而不是对象指针 —— 每次 currentRootSections 都会新建
+     * CPListItem，指针必然不同，但内容相同就不该重推。
+     */
+    NSString *fingerprint = [self sectionsFingerprint:sections];
+    if (_lastPushedFingerprint && [_lastPushedFingerprint isEqualToString:fingerprint]) {
+        MFCarPlayLogBoth(@"refresh: content unchanged, skip updateSections (%lu sections)",
+              (unsigned long)sections.count);
+        return;
+    }
+    _lastPushedFingerprint = fingerprint;
+
     [_rootList updateSections:sections];
-    MFCarPlayLogBoth(@"updateSections root sections=%lu sheetsReceived=%d applied=%d window=%d",
-          (unsigned long)sections.count, _sheetsReceived, _rootApplied, self.carWindow != nil);
+    MFCarPlayLogBoth(@"updateSections root sections=%lu sheetsReceived=%d applied=%d",
+          (unsigned long)sections.count, _sheetsReceived, _rootApplied);
+}
+
+/*
+ * sections 内容指纹：只取"用户可见的文字"，不取对象地址。
+ * 覆盖标题 + 副标题 + 每个 section 的 item 数。
+ * 歌单增删改、数量变化都会改变指纹，从而允许重推。
+ */
+- (NSString *)sectionsFingerprint:(NSArray<CPListSection *> *)sections {
+    NSMutableString *buf = [NSMutableString string];
+    for (CPListSection *sec in sections) {
+        NSArray *items = nil;
+        @try {
+            /* CPListSection 没有公开的 items 读取接口，借 KVC 拿；
+               拿不到就退化为按 section 计数，仍能挡住大部分重复。 */
+            items = [sec valueForKey:@"items"];
+        } @catch (NSException *e) {
+            (void)e;
+            items = nil;
+        }
+        [buf appendFormat:@"[%lu]", (unsigned long)([items isKindOfClass:[NSArray class]] ? items.count : 0)];
+        if ([items isKindOfClass:[NSArray class]]) {
+            for (id it in (NSArray *)items) {
+                NSString *t = nil;
+                NSString *d = nil;
+                @try {
+                    t = [it valueForKey:@"text"];
+                    d = [it valueForKey:@"detailText"];
+                } @catch (NSException *e) {
+                    (void)e;
+                }
+                [buf appendFormat:@"(%@|%@)", t ?: @"", d ?: @""];
+            }
+        }
+    }
+    return buf;
 }
 
 /* 把 sections 应用到当前 root 模板（供 completion 成功后补推复用） */
