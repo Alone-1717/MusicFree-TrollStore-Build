@@ -331,6 +331,15 @@ chk(".m 类扩展声明遵循 UISceneDelegate",
 chk("头文件与实现都有 carPlayWindow",
     "carPlayWindow" in _hdr and "self.carPlayWindow = win" in cm)
 
+# 11142640 第二次构建失败回归护栏：
+# CI 推送列表里缺 CarPlaySceneDelegate.h，导致远端头文件是旧版（无 carPlayWindow），
+# Xcode 报 "property 'carPlayWindow' not found"。本机 clang 因为用本地头文件所以抓不到。
+_ci = io.open(os.path.join(ROOT, "build", "ci_push_and_build.ps1"), encoding="utf-8").read()
+chk("CI 推送列表包含 CarPlaySceneDelegate.h",
+    "CarPlaySceneDelegate.h" in _ci)
+chk("CI 推送列表包含 CarPlaySceneDelegate.m",
+    "CarPlaySceneDelegate.m" in _ci)
+
 print("=" * 50)
 print("Phase 1 static check:", "ALL PASS" if ok else "FAILED")
 sys.exit(0 if ok else 1)
