@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142633"
+EXPECTED_VERSION = "11142634"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -79,6 +79,10 @@ BINARY_MARKERS = [
     b"AVAudioSession step1 (Playback+A2DP) FAILED",
     b"AVAudioSession step2 (Playback plain) FAILED",
     b"AVAudioSession setActive FAILED",
+    b"CPNowPlayingTemplate factory found:",
+    b"both factory candidates missing",
+    b"NO_SECTIONCOUNT_API",
+    b"ON-SCREEN CONTENT: sectionCount=%lu hasAPI=%d dataSheets=%lu",
 ]
 
 # 旧版已证伪/致命的标记，产物里绝不能再出现

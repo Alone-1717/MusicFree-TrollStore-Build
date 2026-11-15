@@ -76,7 +76,8 @@
 #import "CarPlayBridge.h"
 #import "MFCarPlayLog.h"
 #import "MFCarPlayNativeData.h"
-#import <AVFoundation/AVFoundation.h>   /* CarPlay 会话建立期声明音频类别 */
+#import <AVFoundation/AVFoundation.h>
+#import <objc/message.h>   /* objc_msgSend：BOOl/无参类方法的防御式调用 */   /* CarPlay 会话建立期声明音频类别 */
 
 static NSString *const kMFCarPlayDataDidUpdate = @"MFCarPlayDataDidUpdate";
 
@@ -302,7 +303,25 @@ static id<NSObject> sDataObserverToken = nil;
      */
     if (isList) {
         CPListTemplate *probe = (CPListTemplate *)template;
-        NSUInteger secCount = probe.sectionCount;
+        /*
+         * sectionCount 也是"我不能百分百确认是公开 API"的属性 ——
+         * 和 isActive 一样，曾把我坑过一次（编译期静默、运行时崩）。
+         * 这里用 respondsToSelector 探测后再读，读不到就记 -1。
+         */
+        /*
+         * 用 objc_msgSend 读，彻底不依赖头文件里有没有这个属性声明。
+         * 属性访问语法 probe.sectionCount 在编译期就需要声明；
+         * 而真实 SDK 有没有 sectionCount 我无法百分百确认，
+         * 所以走运行时消息发送 + respondsToSelector 双重保护：
+         *   - 没有该方法 -> hasSectionCount=0，不调用，不崩
+         *   - 有该方法   -> 按 NSUInteger 返回值读取
+         */
+        SEL scSel = NSSelectorFromString(@"sectionCount");
+        BOOL hasSectionCount = [probe respondsToSelector:scSel];
+        NSUInteger secCount = 0;
+        if (hasSectionCount) {
+            secCount = ((NSUInteger (*)(id, SEL))objc_msgSend)(probe, scSel);
+        }
         NSUInteger dataSheets = [(NSArray *)(_lastSheetsSnapshot ?: @[]) count];
 
         /*
@@ -317,11 +336,13 @@ static id<NSObject> sDataObserverToken = nil;
          * 后果很实际：车机真出问题时，恰好少了这条最该看的告警。
          * 现在改成把状态编码进一条**必定执行**的日志里，字符串不会再被丢。
          */
-        const char *verdict = (secCount == 0) ? "EMPTY_SECTIONS_BUG"
+        const char *verdict = (!hasSectionCount) ? "NO_SECTIONCOUNT_API"
+                            : (secCount == 0) ? "EMPTY_SECTIONS_BUG"
                             : (dataSheets == 0) ? "EMPTY_DATA"
                             : "OK";
-        MFCarPlayLogBoth(@"ON-SCREEN CONTENT: sectionCount=%lu dataSheets=%lu appliedBefore=%d sameAsRoot=%d verdict=%s",
-              (unsigned long)secCount, (unsigned long)dataSheets,
+        MFCarPlayLogBoth(@"ON-SCREEN CONTENT: sectionCount=%lu hasAPI=%d dataSheets=%lu "
+                         @"appliedBefore=%d sameAsRoot=%d verdict=%s",
+              (unsigned long)secCount, hasSectionCount, (unsigned long)dataSheets,
               _rootApplied, isSameObject, verdict);
     }
 
@@ -590,16 +611,96 @@ static id<NSObject> sDataObserverToken = nil;
         }
 
         /*
-         * 回读真实状态：category / isActive 才是系统认定的事实，
-         * 不依赖我们调用时的返回值。
+         * 回读 category（公开只读属性）。
+         *
+         * 注意：**不要读 isActive** —— AVAudioSession 没有这个公开属性，
+         * 11142633 的构建就是因为它报
+         *   error: property 'isActive' not found on object of type 'AVAudioSession *'
+         * 是否激活只能看 setActive: 的返回值（即上面的 actOK）。
+         * 这是第二次踩"桩里凭猜测加属性"的坑，已在桩里同步删除该声明。
          */
         MFCarPlayLogBoth(@"AVAudioSession final: catOK=%d opts=%@ actOK=%d "
-                         @"| readback category=%@ active=%d (before root install)",
+                         @"| readback category=%@ (before root install)",
               catOK, usedOptions, actOK,
-              session.category ?: @"(nil)",
-              (int)session.isActive);
+              session.category ?: @"(nil)");
     } @catch (NSException *e) {
         MFCarPlayLogBoth(@"AVAudioSession setup threw: %@", e.reason);
+    }
+
+    /*
+     * ============ 11142633：尝试配置 CPNowPlayingTemplate（防御式） ============
+     *
+     * 依据（参考实现 missuo/kumone）：它在 didConnect 里、
+     * setRootTemplate 之前先取 CPNowPlayingTemplate.shared 并设置开关。
+     *
+     * ============ 为什么不直接 [CPNowPlayingTemplate sharedTemplate] ============
+     *   Swift 里写的是 .shared，但 Swift 的导入规则无法区分 ObjC 侧到底是
+     *       + (instancetype)sharedTemplate;
+     *   还是
+     *       + (instancetype)sharedInstance;
+     *   两者在 Swift 都显示为 .shared。kumone 全部用 Swift 写，ObjC 文件里
+     *   没有 CarPlay 调用，无法反推；本机又没有 iOS SDK 可查头文件。
+     *
+     *   名写错 = unrecognized selector = 直接闪退，比现在的静默失败更糟。
+     *   所以这里**不硬写任何一个名字**：
+     *     1) 用 respondsToSelector 逐个候选择器探测类方法是否存在
+     *     2) 命中哪个用哪个，并把命中的名字打进日志
+     *     3) 两个都不存在就只记一条日志，绝不调用 —— 保证不崩
+     *
+     * 这一段的价值：下一版日志会直接告诉我们真实选择器是哪个。
+     *   "CPNowPlayingTemplate factory found: sharedTemplate"  -> 就是它
+     *   "CPNowPlayingTemplate factory found: sharedInstance"  -> 才知道是它
+     *   "both candidates missing"                             -> 两个都不是，另找
+     */
+    @try {
+        Class npClass = NSClassFromString(@"CPNowPlayingTemplate");
+        if (!npClass) {
+            MFCarPlayLogBoth(@"CPNowPlayingTemplate class not found at runtime");
+        } else {
+            id np = nil;
+            NSString *usedSel = nil;
+
+            /* __unsafe_unretained 防止 ARC 对未知返回值做 retain/release 出错 */
+            SEL selTemplate = NSSelectorFromString(@"sharedTemplate");
+            SEL selInstance = NSSelectorFromString(@"sharedInstance");
+            SEL selShared   = NSSelectorFromString(@"shared");
+
+            if ([npClass respondsToSelector:selTemplate]) {
+                usedSel = @"sharedTemplate";
+                np = ((id (*)(id, SEL))objc_msgSend)(npClass, selTemplate);
+            } else if ([npClass respondsToSelector:selInstance]) {
+                usedSel = @"sharedInstance";
+                np = ((id (*)(id, SEL))objc_msgSend)(npClass, selInstance);
+            } else if ([npClass respondsToSelector:selShared]) {
+                usedSel = @"shared";
+                np = ((id (*)(id, SEL))objc_msgSend)(npClass, selShared);
+            }
+
+            if (usedSel && np) {
+                MFCarPlayLogBoth(@"CPNowPlayingTemplate factory found: %@ (instance=%p)",
+                      usedSel, np);
+
+                /*
+                 * 开关是 BOOL 参数，必须用函数指针调用，
+                 * 不能 performSelector:withObject:（那要求对象参数）。
+                 */
+                SEL upNext = NSSelectorFromString(@"setUpNextButtonEnabled:");
+                if ([np respondsToSelector:upNext]) {
+                    ((void (*)(id, SEL, BOOL))objc_msgSend)(np, upNext, YES);
+                }
+                SEL albumArtist = NSSelectorFromString(@"setAlbumArtistButtonEnabled:");
+                if ([np respondsToSelector:albumArtist]) {
+                    ((void (*)(id, SEL, BOOL))objc_msgSend)(np, albumArtist, YES);
+                }
+                MFCarPlayLogBoth(@"CPNowPlayingTemplate configured (upNext/albumArtist set on %@)",
+                      usedSel);
+            } else {
+                MFCarPlayLogBoth(@"CPNowPlayingTemplate: both factory candidates missing "
+                                 @"(sharedTemplate/sharedInstance/shared) — skipped, no crash");
+            }
+        }
+    } @catch (NSException *e) {
+        MFCarPlayLogBoth(@"CPNowPlayingTemplate setup threw: %@", e.reason);
     }
 
     [self installRootIfNeeded];
@@ -1438,10 +1539,18 @@ static id<NSObject> sDataObserverToken = nil;
      *   - 上屏时有、推的时候覆盖成空  -> currentRootSections 在这次调用返回空，
      *                                    查数据层（MMKV / 桥接竞争）
      */
-    MFCarPlayLogBoth(@"updateSections done root.sectionCount=%lu pushed=%lu sheetsReceived=%d applied=%d",
-          (unsigned long)_rootList.sectionCount,
-          (unsigned long)sections.count,
-          _sheetsReceived, _rootApplied);
+    {
+        SEL scSel2 = NSSelectorFromString(@"sectionCount");
+        BOOL hasSC = [_rootList respondsToSelector:scSel2];
+        NSUInteger sc = 0;
+        if (hasSC) {
+            sc = ((NSUInteger (*)(id, SEL))objc_msgSend)(_rootList, scSel2);
+        }
+        MFCarPlayLogBoth(@"updateSections done root.sectionCount=%lu (probe=%d) pushed=%lu sheetsReceived=%d applied=%d",
+              (unsigned long)sc, hasSC,
+              (unsigned long)sections.count,
+              _sheetsReceived, _rootApplied);
+    }
 }
 
 /*
