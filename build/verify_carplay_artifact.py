@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142636"
+EXPECTED_VERSION = "11142637"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -88,6 +88,7 @@ BINARY_MARKERS = [
     b"ROOT TEMPLATE VISIBLE -> applied=1, about to refresh",
     b"scene config -> CarPlay delegate + CPTemplateApplicationScene",
     b"scene config -> main app delegate role=%@ sceneClass=UIWindowScene",
+    b"TOP-TEMPLATE PROBE: top=%p class=%@ ourRoot=%p match=%d",
 ]
 
 # 旧版已证伪/致命的标记，产物里绝不能再出现

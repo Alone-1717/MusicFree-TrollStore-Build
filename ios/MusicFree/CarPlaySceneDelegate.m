@@ -190,6 +190,8 @@ static id<NSObject> sDataObserverToken = nil;
     BOOL _nativeSheetsUsed;
     /* 数据准备日志只打一次详情，之后精简 */
     BOOL _nativeDataLogged;
+    /* topTemplate 探针只打一次，避免 watchdog 每轮刷屏 */
+    BOOL _topProbeLogged;
     /* 缓存最近一次准备好的 sections，供 root 被接受后补推 */
     NSArray<CPListSection *> *_lastSections;
     /*
@@ -1335,6 +1337,34 @@ static id<NSObject> sDataObserverToken = nil;
         return NO;
     }
     CPTemplate *top = ic.topTemplate;
+
+    /*
+     * ============ 11142637：把 topTemplate 的真实内容打出来 ============
+     *
+     * 十轮排查里最大的诊断盲点：这个方法过去只在 top == _rootList 时
+     * 打一条 SYNC CONFIRM，否则**静默返回 NO**。
+     * 于是我们从来不知道 topTemplate 到底是什么 ——
+     * 是 nil？是系统自带的某个模板？还是读它本身就返回空？
+     *
+     * 这三种情况对应的根因完全不同：
+     *   top == nil            -> controller 尚未提交过任何模板，
+     *                            或场景没有真正连上 carplayd
+     *   top 是系统模板        -> 框架自己占用了 root，我们被拒绝
+     *   top == 我们的旧模板   -> completion 丢了但提交成功（状态机问题）
+     *
+     * 只打一次（_topProbeLogged），避免 watchdog 每轮刷屏。
+     */
+    if (!_topProbeLogged) {
+        _topProbeLogged = YES;
+        MFCarPlayLogBoth(@"TOP-TEMPLATE PROBE: top=%p class=%@ ourRoot=%p match=%d "
+                         @"templates=%lu",
+              (__bridge void *)top,
+              top ? NSStringFromClass([top class]) : @"(nil)",
+              (__bridge void *)_rootList,
+              (top && top == _rootList),
+              (unsigned long)(ic.templates ? ic.templates.count : 0));
+    }
+
     if (_rootList && top == _rootList) {
         /*
          * 措辞必须准确：这里只能证明「框架当前认定的 top 就是我们的模板」。
