@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142651"
+EXPECTED_VERSION = "11142652"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -96,12 +96,6 @@ BINARY_MARKERS = [
     b"TRACKS tap row=%ld track=%@ sheet=%@",
     b"emitted CarPlayPlayTrack track=%@",
     b"WINDOW DATA UPDATE -> reload root table",
-    b"ROOT TABLE ready: 3 modules (sheets/search/history)",
-    b"ROOT tap module=%@ row=%ld",
-    b"SHEETS VC: %lu sheets",
-    b"SHEETS tap row=%ld sheet=%@ title=%@",
-    b"SEARCH VC ready (native local search)",
-    b"SEARCH tap row=%ld track=%@ sheet=%@",
     b"history total = %lu (requested %lu)",
     b"search '%@' hits = %lu",
     b"NOWPLAYING VC: title=%@ artist=%@ album=%@ duration=%.0f",
@@ -109,6 +103,12 @@ BINARY_MARKERS = [
     b"NOWPLAYING tap PLAY/PAUSE",
     b"NOWPLAYING tap NEXT",
     b"NOWPLAYING cover loaded %lu bytes",
+    b"ROOT ready: 3 tabs (sheets/search/history), selected=0",
+    b"ROOT tab -> %ld (0=sheets 1=search 2=history)",
+    b"ROOT search '%@' -> %lu results",
+    b"ROOT sheets tap row=%ld sheet=%@",
+    b"ROOT history tap row=%ld track=%@",
+    b"ROOT search tap row=%ld track=%@",
 ]
 
 # 旧版已证伪/致命的标记，产物里绝不能再出现

@@ -164,10 +164,37 @@ NSArray<NSDictionary *> *MFCarPlayNativeSheets(void) {
                 count = @([(NSArray *)tracks count]);
             }
         }
+        /*
+         * 11142652: add coverImg for the CarPlay sheet list.
+         *
+         * JS side (src/core/musicSheet/index.ts) sets:
+         *   coverImg: musicList.at(0)?.artwork
+         * i.e. the first track's artwork. So prefer coverImg,
+         * fall back to the first track's artwork field.
+         */
+        NSString *cover = @"";
+        id cimg = d[@"coverImg"];
+        if ([cimg isKindOfClass:[NSString class]] && [cimg length] > 0) {
+            cover = (NSString *)cimg;
+        }
+        if (cover.length == 0) {
+            id tr = MFReadJSON([NSString stringWithFormat:@"LocalSheet.%@", sid]);
+            if ([tr isKindOfClass:[NSArray class]] && [tr count] > 0) {
+                id first = [tr firstObject];
+                if ([first isKindOfClass:[NSDictionary class]]) {
+                    id art = ((NSDictionary *)first)[@"artwork"];
+                    if ([art isKindOfClass:[NSString class]]) {
+                        cover = (NSString *)art;
+                    }
+                }
+            }
+        }
+
         [out addObject:@{
             @"id": sid,
             @"title": title,
             @"count": count ?: @(0),
+            @"coverImg": cover ?: @"",
         }];
     }
     MFDiag(@"sheets total = %lu (raw %lu)", (unsigned long)out.count, (unsigned long)arr.count);
