@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142620"
+EXPECTED_VERSION = "11142621"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -31,6 +31,9 @@ BINARY_MARKERS = [
     b"sync probe unlocked",
     b"carplay.1.log",
     b"MusicFree CarPlay log ",
+    b"[native-data] sheet",
+    b"sheets from NATIVE",
+    b"tracks from NATIVE",
     b"initial install still settling, wait",
     b"template handshake not settled yet",
     b"rearm #%lu/%lu",

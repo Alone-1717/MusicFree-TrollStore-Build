@@ -13,6 +13,7 @@
 		C4A9C9D0E5F6000000000003 /* CarPlaySceneDelegate.m in Sources */ = {isa = PBXBuildFile; fileRef = C4A9C9D0E5F6000000000002 /* CarPlaySceneDelegate.m */; };
 		C4A9C9D0E5F6000000000013 /* CarPlayBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = C4A9C9D0E5F6000000000012 /* CarPlayBridge.m */; };
 		C4A9C9D0E5F6000000000033 /* MFCarPlayLog.m in Sources */ = {isa = PBXBuildFile; fileRef = C4A9C9D0E5F6000000000032 /* MFCarPlayLog.m */; };
+		C4A9C9D0E5F6000000000043 /* MFCarPlayNativeData.m in Sources */ = {isa = PBXBuildFile; fileRef = C4A9C9D0E5F6000000000042 /* MFCarPlayNativeData.m */; };
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
 		13B07FC11A68108700A75B9A /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = 13B07FB71A68108700A75B9A /* main.m */; };
 		7699B88040F8A987B510C191 /* libPods-MusicFree-MusicFreeTests.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 19F6CBCC0A4E27FBF8BF4A61 /* libPods-MusicFree-MusicFreeTests.a */; };
@@ -46,6 +47,8 @@
 		C4A9C9D0E5F6000000000012 /* CarPlayBridge.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; name = CarPlayBridge.m; path = MusicFree/CarPlayBridge.m; sourceTree = "<group>"; };
 		C4A9C9D0E5F6000000000031 /* MFCarPlayLog.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = MFCarPlayLog.h; path = MusicFree/MFCarPlayLog.h; sourceTree = "<group>"; };
 		C4A9C9D0E5F6000000000032 /* MFCarPlayLog.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; name = MFCarPlayLog.m; path = MusicFree/MFCarPlayLog.m; sourceTree = "<group>"; };
+		C4A9C9D0E5F6000000000041 /* MFCarPlayNativeData.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = MFCarPlayNativeData.h; path = MusicFree/MFCarPlayNativeData.h; sourceTree = "<group>"; };
+		C4A9C9D0E5F6000000000042 /* MFCarPlayNativeData.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; name = MFCarPlayNativeData.m; path = MusicFree/MFCarPlayNativeData.m; sourceTree = "<group>"; };
 		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = MusicFree/Images.xcassets; sourceTree = "<group>"; };
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = MusicFree/Info.plist; sourceTree = "<group>"; };
 		13B07FB71A68108700A75B9A /* main.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; name = main.m; path = MusicFree/main.m; sourceTree = "<group>"; };
@@ -112,6 +115,8 @@
 				C4A9C9D0E5F6000000000012 /* CarPlayBridge.m */,
 				C4A9C9D0E5F6000000000031 /* MFCarPlayLog.h */,
 				C4A9C9D0E5F6000000000032 /* MFCarPlayLog.m */,
+				C4A9C9D0E5F6000000000041 /* MFCarPlayNativeData.h */,
+				C4A9C9D0E5F6000000000042 /* MFCarPlayNativeData.m */,
 				13B07FB51A68108700A75B9A /* Images.xcassets */,
 				13B07FB61A68108700A75B9A /* Info.plist */,
 				81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */,
@@ -424,6 +429,7 @@ A1B2C3D4E5F60718293A0002 /* SplashScreen.storyboard in Resources */,
 				C4A9C9D0E5F6000000000003 /* CarPlaySceneDelegate.m in Sources */,
 				C4A9C9D0E5F6000000000013 /* CarPlayBridge.m in Sources */,
 				C4A9C9D0E5F6000000000033 /* MFCarPlayLog.m in Sources */,
+				C4A9C9D0E5F6000000000043 /* MFCarPlayNativeData.m in Sources */,
 				13B07FC11A68108700A75B9A /* main.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -502,7 +508,7 @@ A1B2C3D4E5F60718293A0002 /* SplashScreen.storyboard in Resources */,
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CURRENT_PROJECT_VERSION = 11142620;
+				CURRENT_PROJECT_VERSION = 11142621;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = MusicFree/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
@@ -532,7 +538,7 @@ A1B2C3D4E5F60718293A0002 /* SplashScreen.storyboard in Resources */,
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CURRENT_PROJECT_VERSION = 11142620;
+				CURRENT_PROJECT_VERSION = 11142621;
 				INFOPLIST_FILE = MusicFree/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				LD_RUNPATH_SEARCH_PATHS = (

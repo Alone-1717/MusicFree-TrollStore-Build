@@ -75,6 +75,7 @@
 #import "CarPlaySceneDelegate.h"
 #import "CarPlayBridge.h"
 #import "MFCarPlayLog.h"
+#import "MFCarPlayNativeData.h"
 
 static NSString *const kMFCarPlayDataDidUpdate = @"MFCarPlayDataDidUpdate";
 
@@ -161,6 +162,8 @@ static id<NSObject> sDataObserverToken = nil;
      */
     BOOL _controllerInvalidated;
     BOOL _observerOwnedByMe;
+    /* 是否已记录过"数据来自原生"（避免刷屏） */
+    BOOL _nativeSheetsUsed;
     /* 已经对哪个 controller 调用过 setRootTemplate（一个 controller 只准一次） */
     __weak CPInterfaceController *_rootInstalledFor;
     __weak CPTemplateApplicationScene *_templateScene;
@@ -414,9 +417,28 @@ static id<NSObject> sDataObserverToken = nil;
     MFCarPlayLogBoth(@"data observer removed");
 }
 
-#pragma mark - 数据读取（RN 可为空，绝不阻塞首屏）
+#pragma mark - 数据读取（原生优先，桥接兜底）
 
+/*
+ * 11142620 真机日志结论：
+ *   CarPlay 以 intent background 冷启动时 RN 运行时没起来，
+ *   bridge init / carPlayJSReady / updateSections 全部零出现。
+ *   所以数据必须走原生直读 MMKV，不能再等 JS 推。
+ *
+ * 策略：
+ *   1) 先读原生（MFCarPlayNativeData），能拿到就直接用 —— 车机首屏不等 RN。
+ *   2) 原生为空时才回落到桥接（手机端 App 已运行时桥接有数据）。
+ *   3) 两者都空 -> 返回空数组，UI 会显示"暂无歌单"。
+ */
 - (NSArray<NSDictionary *> *)sheets {
+    NSArray<NSDictionary *> *native = MFCarPlayNativeSheets();
+    if (native.count > 0) {
+        if (!_nativeSheetsUsed) {
+            _nativeSheetsUsed = YES;
+            MFCarPlayLogBoth(@"sheets from NATIVE, count=%lu", (unsigned long)native.count);
+        }
+        return native;
+    }
     MFCarPlayBridge *bridge = [MFCarPlayBridge shared];
     NSArray *s = [bridge sheets];
     return [s isKindOfClass:[NSArray class]] ? s : @[];
@@ -425,6 +447,12 @@ static id<NSObject> sDataObserverToken = nil;
 - (NSArray<NSDictionary *> *)tracksForSheet:(NSString *)sheetId {
     if (!sheetId.length) {
         return @[];
+    }
+    NSArray<NSDictionary *> *native = MFCarPlayNativeTracks(sheetId);
+    if (native.count > 0) {
+        MFCarPlayLogBoth(@"tracks from NATIVE, sheet=%@ count=%lu",
+                         sheetId, (unsigned long)native.count);
+        return native;
     }
     MFCarPlayBridge *bridge = [MFCarPlayBridge shared];
     NSArray *t = [bridge tracksForSheetId:sheetId];
