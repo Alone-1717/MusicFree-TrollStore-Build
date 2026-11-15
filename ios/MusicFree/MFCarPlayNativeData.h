@@ -26,6 +26,33 @@ NSArray<NSDictionary *> *MFCarPlayNativeSheets(void);
 /* 返回 @[@{@"id":NSString, @"title":NSString, @"artist":NSString}, ...] */
 NSArray<NSDictionary *> *MFCarPlayNativeTracks(NSString *sheetId);
 
+/*
+ * 11142649：最近播放
+ *
+ * 数据源是 JS 侧 src/core/musicHistory.ts 用的 MMKV：
+ *   实例 = "music.MusicHistory"，key = "history"
+ *   值是 IMusic.IMusicItem[] 的 JSON 数组（最新在前）
+ *
+ * 完全原生读取，不需要 RN 运行时 —— 车机冷启动也能显示。
+ * limit <= 0 表示不限制。
+ */
+NSArray<NSDictionary *> *MFCarPlayNativeHistory(NSUInteger limit);
+
+/*
+ * 11142649：搜索
+ *
+ * 遍历所有本地歌单（LocalSheet.<sheetId>）的曲目，
+ * 对 title / artist 做**不区分大小写**的子串匹配。
+ *
+ * 为什么不走 RN 的 searchPage：
+ *   车机冷启动时 RN 运行时未初始化，主 App 没打开就搜不了。
+ *   本地歌单的曲目都在 MMKV 里，原生直接遍历即可。
+ *   （联网搜插件源需要 RN + 网络，不在车机路径上）
+ *
+ * query 为空时返回空数组。
+ */
+NSArray<NSDictionary *> *MFCarPlayNativeSearchTracks(NSString *query);
+
 /* 数据来源诊断，写进日志便于判断到底读到没有 */
 NSString *MFCarPlayNativeDataDiagnosis(void);
 

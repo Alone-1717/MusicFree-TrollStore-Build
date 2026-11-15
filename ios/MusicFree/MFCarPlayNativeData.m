@@ -88,6 +88,47 @@ static id MFReadJSON(NSString *mmkvId) {
 #endif
 }
 
+/*
+ * 11142649：可指定 key 的 MMKV JSON 读取。
+ *
+ * 现有的 MFReadJSON(mmkvId) 硬编码 kMFDataKey(@"data")，
+ * 那是 LocalSheet.* 的格式。而最近播放用的是
+ *   music.MusicHistory 实例 + "history" key，
+ * 所以需要这个通用版本。
+ */
+static id MFReadMMKVJSON(NSString *mmkvId, NSString *key) {
+#if MF_HAVE_MMKV
+    @try {
+        MMKV *kv = [MMKV mmkvWithID:mmkvId];
+        if (!kv) {
+            MFDiag(@"mmkv(%@) = nil", mmkvId);
+            return nil;
+        }
+        NSString *raw = [kv getStringForKey:key];
+        if (!raw || raw.length == 0) {
+            MFDiag(@"mmkv(%@)[%@] = empty", mmkvId, key);
+            return nil;
+        }
+        NSData *d = [raw dataUsingEncoding:NSUTF8StringEncoding];
+        NSError *err = nil;
+        id obj = [NSJSONSerialization JSONObjectWithData:d options:0 error:&err];
+        if (!obj) {
+            MFDiag(@"mmkv(%@)[%@] parse failed: %@", mmkvId, key, err.localizedDescription);
+            return nil;
+        }
+        MFDiag(@"mmkv(%@)[%@] ok, type=%@ len=%lu",
+               mmkvId, key, NSStringFromClass([obj class]), (unsigned long)raw.length);
+        return obj;
+    } @catch (NSException *e) {
+        MFDiag(@"mmkv(%@)[%@] threw: %@", mmkvId, key, e.reason);
+        return nil;
+    }
+#else
+    MFDiag(@"MMKV header not available at compile time");
+    return nil;
+#endif
+}
+
 NSArray<NSDictionary *> *MFCarPlayNativeSheets(void) {
     id obj = MFReadJSON(kMFSheetDirKey);
     if (![obj isKindOfClass:[NSArray class]]) {
@@ -188,6 +229,142 @@ NSArray<NSDictionary *> *MFCarPlayNativeTracks(NSString *sheetId) {
     }
     MFDiag(@"tracks sheet=%@ total = %lu", sheetId, (unsigned long)out.count);
     return out;
+}
+
+#pragma mark - 11142649：最近播放 + 搜索
+
+/*
+ * 把 IMusic.IMusicItem 归一化成车机用的 dict。
+ * 字段映射与 MFCarPlayNativeTracks 保持一致，另加 platform 供点播定位。
+ */
+static NSDictionary *MFNormalizeTrack(NSDictionary *d) {
+    if (![d isKindOfClass:[NSDictionary class]]) {
+        return nil;
+    }
+    NSString *tid = nil;
+    for (NSString *k in @[@"id", @"musicItemId"]) {
+        id v = d[k];
+        if ([v isKindOfClass:[NSString class]] && [(NSString *)v length] > 0) {
+            tid = (NSString *)v;
+            break;
+        }
+    }
+    if (tid.length == 0) {
+        return nil;
+    }
+    NSString *title = [d[@"title"] isKindOfClass:[NSString class]]
+        ? d[@"title"] : @"未知歌曲";
+
+    NSString *artist = @"";
+    id ar = d[@"artist"];
+    if ([ar isKindOfClass:[NSString class]]) {
+        artist = (NSString *)ar;
+    } else if ([ar isKindOfClass:[NSArray class]]) {
+        NSMutableArray *names = [NSMutableArray array];
+        for (id a in (NSArray *)ar) {
+            if ([a isKindOfClass:[NSString class]]) {
+                [names addObject:a];
+            }
+        }
+        artist = [names componentsJoinedByString:@"/"];
+    }
+
+    NSString *platform = [d[@"platform"] isKindOfClass:[NSString class]]
+        ? d[@"platform"] : @"";
+
+    return @{
+        @"id": tid,
+        @"title": title,
+        @"artist": artist,
+        @"platform": platform,
+    };
+}
+
+NSArray<NSDictionary *> *MFCarPlayNativeHistory(NSUInteger limit) {
+    /*
+     * 数据源：src/core/musicHistory.ts
+     *   getOrCreateMMKV("music.MusicHistory")，key = "history"
+     *   值为 IMusic.IMusicItem[] JSON（最新在前）
+     */
+    @try {
+        id obj = MFReadMMKVJSON(@"music.MusicHistory", @"history");
+        if (![obj isKindOfClass:[NSArray class]]) {
+            MFDiag(@"history: not an array (%@)", NSStringFromClass([obj class]));
+            return @[];
+        }
+        NSArray *arr = (NSArray *)obj;
+        NSMutableArray<NSDictionary *> *out = [NSMutableArray array];
+        NSUInteger max = (limit == 0) ? arr.count : MIN(limit, arr.count);
+        for (NSUInteger i = 0; i < max; i++) {
+            NSDictionary *n = MFNormalizeTrack(arr[i]);
+            if (n) {
+                [out addObject:n];
+            }
+        }
+        MFDiag(@"history total = %lu (requested %lu)",
+              (unsigned long)out.count, (unsigned long)limit);
+        return out;
+    } @catch (NSException *e) {
+        MFDiag(@"history threw: %@", e.reason);
+        return @[];
+    }
+}
+
+NSArray<NSDictionary *> *MFCarPlayNativeSearchTracks(NSString *query) {
+    if (![query isKindOfClass:[NSString class]] || query.length == 0) {
+        return @[];
+    }
+    NSString *q = [query lowercaseString];
+
+    @try {
+        NSArray<NSDictionary *> *sheets = MFCarPlayNativeSheets();
+        NSMutableArray<NSDictionary *> *out = [NSMutableArray array];
+        NSMutableSet<NSString *> *seen = [NSMutableSet set];
+
+        for (NSDictionary *s in sheets) {
+            NSString *sid = [s[@"id"] isKindOfClass:[NSString class]] ? s[@"id"] : nil;
+            if (sid.length == 0) {
+                continue;
+            }
+            NSString *sheetTitle = [s[@"title"] isKindOfClass:[NSString class]]
+                ? s[@"title"] : @"";
+            NSArray<NSDictionary *> *tracks = MFCarPlayNativeTracks(sid);
+            for (NSDictionary *tr in tracks) {
+                NSString *tt = tr[@"title"] ?: @"";
+                NSString *ar = tr[@"artist"] ?: @"";
+                BOOL hit = [[tt lowercaseString] containsString:q]
+                        || [[ar lowercaseString] containsString:q];
+                if (!hit) {
+                    continue;
+                }
+                NSString *tid = tr[@"id"] ?: @"";
+                NSString *key = [NSString stringWithFormat:@"%@|%@", sid, tid];
+                if ([seen containsObject:key]) {
+                    continue;
+                }
+                [seen addObject:key];
+                [out addObject:@{
+                    @"id": tid,
+                    @"title": tt,
+                    @"artist": ar,
+                    @"platform": tr[@"platform"] ?: @"",
+                    @"sheetId": sid,
+                    @"sheetTitle": sheetTitle,
+                }];
+                if (out.count >= 100) {
+                    break;
+                }
+            }
+            if (out.count >= 100) {
+                break;
+            }
+        }
+        MFDiag(@"search '%@' hits = %lu", query, (unsigned long)out.count);
+        return out;
+    } @catch (NSException *e) {
+        MFDiag(@"search threw: %@", e.reason);
+        return @[];
+    }
 }
 
 NSString *MFCarPlayNativeDataDiagnosis(void) {

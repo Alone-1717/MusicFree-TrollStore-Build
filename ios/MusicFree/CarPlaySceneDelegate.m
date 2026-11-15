@@ -124,6 +124,8 @@ static id<NSObject> sDataObserverToken = nil;
 @property (nonatomic, strong, nullable) MFCarPlayWindowRootVC *windowRootVC;
 @property (nonatomic, strong, nullable) id windowDataObserver;
 - (void)registerWindowDataObserver;
+- (NSArray<NSDictionary *> *)historyForCarPlay;
+- (NSArray<NSDictionary *> *)searchForCarPlay:(NSString *)query;
 - (void)attachInterfaceController:(CPInterfaceController *)interfaceController
                             scene:(CPTemplateApplicationScene *)scene;
 - (void)registerDataObserverIfNeeded;
@@ -171,6 +173,8 @@ static id<NSObject> sDataObserverToken = nil;
 @property (nonatomic, weak) MFCarPlaySceneDelegate *carPlayDelegate;
 @property (nonatomic, strong) UITableView *table;
 @property (nonatomic, strong) NSArray<NSDictionary *> *sheets;
+/* 三模块菜单项：@[@{kind,title,detail}] */
+@property (nonatomic, strong) NSArray<NSDictionary *> *modules;
 - (void)reloadSheets;
 @end
 
@@ -181,8 +185,35 @@ static id<NSObject> sDataObserverToken = nil;
 @property (nonatomic, strong) NSArray<NSDictionary *> *tracks;
 @end
 
+/* 歌单列表页（三模块之一） */
+@interface MFCarPlayWindowSheetsVC : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@property (nonatomic, weak) MFCarPlaySceneDelegate *carPlayDelegate;
+@property (nonatomic, strong) UITableView *table;
+@property (nonatomic, strong) NSArray<NSDictionary *> *sheets;
+@end
+
+/* 搜索页（三模块之一）：UITextField + 结果表 */
+@interface MFCarPlayWindowSearchVC : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@property (nonatomic, weak) MFCarPlaySceneDelegate *carPlayDelegate;
+@property (nonatomic, strong) UITableView *table;
+@property (nonatomic, strong) UITextField *field;
+@property (nonatomic, strong) NSArray<NSDictionary *> *results;
+@end
+
 @implementation MFCarPlayWindowRootVC
 
+/*
+ * ============ 11142649：三模块主界面（用户指定设计）============
+ *
+ *   歌单列表            搜索                最近播放
+ *     ↓ 点击歌单          ↓ 点击搜索           ↓ 显示最近播放的 200 首
+ *   曲目列表（歌单名）     弹出输入法搜索歌曲      ↓ 点击曲目
+ *     ↓ 点击曲目          ↓ 点击曲目           通知 JS 播放
+ *   通知 JS 播放          通知 JS 播放
+ *
+ * 数据全部来自原生 MMKV（MFCarPlayNativeData），不依赖 RN 运行时，
+ * 车机冷启动也能用。
+ */
 - (void)viewDidLoad {
     [super viewDidLoad];
 
@@ -193,7 +224,7 @@ static id<NSObject> sDataObserverToken = nil;
                                               style:UITableViewStylePlain];
     self.table.dataSource = self;
     self.table.delegate = self;
-    self.table.rowHeight = 60.0;
+    self.table.rowHeight = 72.0;
     self.table.backgroundColor = [UIColor blackColor];
     self.table.separatorColor = [UIColor whiteColor];
     self.table.translatesAutoresizingMaskIntoConstraints = NO;
@@ -206,46 +237,45 @@ static id<NSObject> sDataObserverToken = nil;
         [self.table.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
     ]];
 
-    [self reloadSheets];
+    /*
+     * 三个模块项。用字典描述，便于扩展。
+     *   kind: sheets / search / history
+     */
+    self.modules = @[
+        @{@"kind": @"sheets",  @"title": @"歌单列表", @"detail": @"点击查看歌单曲目"},
+        @{@"kind": @"search",  @"title": @"搜索",     @"detail": @"点击搜索歌曲"},
+        @{@"kind": @"history", @"title": @"最近播放", @"detail": @"最近播放的歌曲"},
+    ];
+
+    [self.table reloadData];
+    MFCarPlayLogBoth(@"ROOT TABLE ready: 3 modules (sheets/search/history)");
 }
 
 - (void)reloadSheets {
-    NSArray<NSDictionary *> *s = nil;
-    if (self.carPlayDelegate) {
-        s = [self.carPlayDelegate sheets];
-    }
-    self.sheets = s ?: @[];
-    self.title = [NSString stringWithFormat:@"歌单 (%lu)",
-                  (unsigned long)self.sheets.count];
+    /* 主菜单不随歌单变化重建，保持三个模块不变 */
     [self.table reloadData];
-    MFCarPlayLogBoth(@"ROOT TABLE reload: %lu sheets",
-          (unsigned long)self.sheets.count);
 }
 
 #pragma mark UITableViewDataSource
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return (NSInteger)self.sheets.count;
+    return (NSInteger)self.modules.count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView
          cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    static NSString *cid = @"sheet";
+    static NSString *cid = @"module";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cid];
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
                                       reuseIdentifier:cid];
     }
-    if (indexPath.row < (NSInteger)self.sheets.count) {
-        NSDictionary *s = self.sheets[(NSUInteger)indexPath.row];
-        NSString *name = [s[@"title"] isKindOfClass:[NSString class]]
-            ? s[@"title"] : @"未命名歌单";
-        id cnt = s[@"count"];
-        cell.textLabel.text = name;
+    if (indexPath.row < (NSInteger)self.modules.count) {
+        NSDictionary *m = self.modules[(NSUInteger)indexPath.row];
+        cell.textLabel.text = m[@"title"];
         cell.textLabel.textColor = [UIColor whiteColor];
-        cell.textLabel.font = [UIFont systemFontOfSize:20.0];
-        cell.detailTextLabel.text = [cnt isKindOfClass:[NSNumber class]]
-            ? [NSString stringWithFormat:@"%@ 首", cnt] : @"";
+        cell.textLabel.font = [UIFont systemFontOfSize:22.0];
+        cell.detailTextLabel.text = m[@"detail"];
         cell.detailTextLabel.textColor = [UIColor whiteColor];
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     }
@@ -256,22 +286,32 @@ static id<NSObject> sDataObserverToken = nil;
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    if (indexPath.row >= (NSInteger)self.sheets.count) {
+    if (indexPath.row >= (NSInteger)self.modules.count) {
         return;
     }
-    NSDictionary *s = self.sheets[(NSUInteger)indexPath.row];
-    NSString *sid = [s[@"id"] isKindOfClass:[NSString class]] ? s[@"id"] : @"";
-    NSString *title = [s[@"title"] isKindOfClass:[NSString class]]
-        ? s[@"title"] : @"未命名歌单";
+    NSString *kind = self.modules[(NSUInteger)indexPath.row][@"kind"];
+    MFCarPlayLogBoth(@"ROOT tap module=%@ row=%ld", kind, (long)indexPath.row);
 
-    MFCarPlayLogBoth(@"ROOT TABLE tap row=%ld sheet=%@ title=%@",
-          (long)indexPath.row, sid, title);
-
-    MFCarPlayWindowTracksVC *vc = [[MFCarPlayWindowTracksVC alloc] init];
-    vc.sheetId = sid;
-    vc.sheetTitle = title;
-    vc.tracks = [self.carPlayDelegate tracksForSheet:sid] ?: @[];
-    [self.navigationController pushViewController:vc animated:YES];
+    if ([kind isEqualToString:@"sheets"]) {
+        MFCarPlayWindowSheetsVC *vc = [[MFCarPlayWindowSheetsVC alloc] init];
+        vc.carPlayDelegate = self.carPlayDelegate;
+        [self.navigationController pushViewController:vc animated:YES];
+        return;
+    }
+    if ([kind isEqualToString:@"search"]) {
+        MFCarPlayWindowSearchVC *vc = [[MFCarPlayWindowSearchVC alloc] init];
+        vc.carPlayDelegate = self.carPlayDelegate;
+        [self.navigationController pushViewController:vc animated:YES];
+        return;
+    }
+    if ([kind isEqualToString:@"history"]) {
+        MFCarPlayWindowTracksVC *vc = [[MFCarPlayWindowTracksVC alloc] init];
+        vc.sheetId = @"";
+        vc.sheetTitle = @"最近播放";
+        vc.tracks = [self.carPlayDelegate historyForCarPlay] ?: @[];
+        [self.navigationController pushViewController:vc animated:YES];
+        return;
+    }
 }
 
 @end
@@ -1041,6 +1081,16 @@ static id<NSObject> sDataObserverToken = nil;
         MFCarPlayLogBoth(@"WINDOW DATA UPDATE -> reload root table");
         [strongSelf.windowRootVC reloadSheets];
     }];
+}
+
+- (NSArray<NSDictionary *> *)historyForCarPlay {
+    /* 11142649：最近播放，原生读 music.MusicHistory，不依赖 RN */
+    return MFCarPlayNativeHistory(200);
+}
+
+- (NSArray<NSDictionary *> *)searchForCarPlay:(NSString *)query {
+    /* 11142649：本地歌单曲目搜索，原生遍历，不依赖 RN */
+    return MFCarPlayNativeSearchTracks(query);
 }
 
 - (CPInterfaceController *)interfaceControllerFromScene:(UIScene *)scene {
@@ -2172,4 +2222,174 @@ static id<NSObject> sDataObserverToken = nil;
     }
 }
 
+
+#pragma mark - 11142649：歌单列表页
+
 @end
+
+
+
+@implementation MFCarPlayWindowSheetsVC
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"歌单列表";
+    self.view.backgroundColor = [UIColor blackColor];
+
+    self.sheets = [self.carPlayDelegate sheets] ?: @[];
+
+    self.table = [[UITableView alloc] initWithFrame:self.view.bounds
+                                              style:UITableViewStylePlain];
+    self.table.dataSource = self;
+    self.table.delegate = self;
+    self.table.rowHeight = 60.0;
+    self.table.backgroundColor = [UIColor blackColor];
+    self.table.separatorColor = [UIColor whiteColor];
+    self.table.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.table];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [self.table.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [self.table.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [self.table.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.table.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+    ]];
+
+    MFCarPlayLogBoth(@"SHEETS VC: %lu sheets", (unsigned long)self.sheets.count);
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return (NSInteger)self.sheets.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView
+         cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *cid = @"sheet";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cid];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                      reuseIdentifier:cid];
+    }
+    if (indexPath.row < (NSInteger)self.sheets.count) {
+        NSDictionary *s = self.sheets[(NSUInteger)indexPath.row];
+        cell.textLabel.text = [s[@"title"] isKindOfClass:[NSString class]]
+            ? s[@"title"] : @"未命名歌单";
+        cell.textLabel.textColor = [UIColor whiteColor];
+        cell.textLabel.font = [UIFont systemFontOfSize:20.0];
+        id cnt = s[@"count"];
+        cell.detailTextLabel.text = [cnt isKindOfClass:[NSNumber class]]
+            ? [NSString stringWithFormat:@"%@ 首", cnt] : @"";
+        cell.detailTextLabel.textColor = [UIColor whiteColor];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    }
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (indexPath.row >= (NSInteger)self.sheets.count) {
+        return;
+    }
+    NSDictionary *s = self.sheets[(NSUInteger)indexPath.row];
+    NSString *sid = [s[@"id"] isKindOfClass:[NSString class]] ? s[@"id"] : @"";
+    NSString *title = [s[@"title"] isKindOfClass:[NSString class]]
+        ? s[@"title"] : @"未命名歌单";
+
+    MFCarPlayLogBoth(@"SHEETS tap row=%ld sheet=%@ title=%@",
+          (long)indexPath.row, sid, title);
+
+    MFCarPlayWindowTracksVC *vc = [[MFCarPlayWindowTracksVC alloc] init];
+    vc.sheetId = sid;
+    vc.sheetTitle = title;
+    vc.tracks = [self.carPlayDelegate tracksForSheet:sid] ?: @[];
+    [self.navigationController pushViewController:vc animated:YES];
+}
+
+@end
+
+#pragma mark - 11142649：搜索页
+
+@implementation MFCarPlayWindowSearchVC
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"搜索";
+    self.view.backgroundColor = [UIColor blackColor];
+    self.results = @[];
+
+    /* 输入框 */
+    self.field = [[UITextField alloc] init];
+    self.field.placeholder = @"输入歌名或歌手";
+    self.field.textColor = [UIColor whiteColor];
+    self.field.backgroundColor = [UIColor blackColor];
+    self.field.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.field];
+
+    /* 结果表 */
+    self.table = [[UITableView alloc] initWithFrame:self.view.bounds
+                                              style:UITableViewStylePlain];
+    self.table.dataSource = self;
+    self.table.delegate = self;
+    self.table.rowHeight = 60.0;
+    self.table.backgroundColor = [UIColor blackColor];
+    self.table.separatorColor = [UIColor whiteColor];
+    self.table.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.table];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [self.field.topAnchor constraintEqualToAnchor:self.view.topAnchor constant:12],
+        [self.field.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
+        [self.field.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
+        [self.field.heightAnchor constraintEqualToConstant:44],
+
+        [self.table.topAnchor constraintEqualToAnchor:self.field.bottomAnchor constant:12],
+        [self.table.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [self.table.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.table.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+    ]];
+
+    MFCarPlayLogBoth(@"SEARCH VC ready (native local search)");
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return (NSInteger)self.results.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView
+         cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *cid = @"result";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cid];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                      reuseIdentifier:cid];
+    }
+    if (indexPath.row < (NSInteger)self.results.count) {
+        NSDictionary *tr = self.results[(NSUInteger)indexPath.row];
+        cell.textLabel.text = tr[@"title"] ?: @"";
+        cell.textLabel.textColor = [UIColor whiteColor];
+        cell.textLabel.font = [UIFont systemFontOfSize:19.0];
+        NSString *ar = tr[@"artist"] ?: @"";
+        NSString *sheet = tr[@"sheetTitle"] ?: @"";
+        cell.detailTextLabel.text = sheet.length > 0
+            ? [NSString stringWithFormat:@"%@  ·  %@", ar, sheet] : ar;
+        cell.detailTextLabel.textColor = [UIColor whiteColor];
+    }
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (indexPath.row >= (NSInteger)self.results.count) {
+        return;
+    }
+    NSDictionary *tr = self.results[(NSUInteger)indexPath.row];
+    NSString *tid = tr[@"id"] ?: @"";
+    NSString *sid = tr[@"sheetId"] ?: @"";
+    MFCarPlayLogBoth(@"SEARCH tap row=%ld track=%@ sheet=%@",
+          (long)indexPath.row, tid, sid);
+    [MFCarPlayBridge emitPlayTrack:tid sheetId:sid];
+    MFCarPlayLogBoth(@"emitted CarPlayPlayTrack track=%@", tid);
+}
+
+@end
+
