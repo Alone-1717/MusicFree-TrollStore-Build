@@ -1,5 +1,5 @@
 /*
- * MFCarPlayLog.m — 把 CarPlay 日志同时写进沙盒 Documents/carplay.log
+ * MFCarPlayLog.m - 把 CarPlay 日志同时写进沙盒 Documents/carplay.log
  * 设计要点见 MFCarPlayLog.h。
  *
  * 注意：

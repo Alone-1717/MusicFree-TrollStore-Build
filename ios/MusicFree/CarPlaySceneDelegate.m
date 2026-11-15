@@ -76,6 +76,7 @@
 #import "CarPlayBridge.h"
 #import "MFCarPlayLog.h"
 #import "MFCarPlayNativeData.h"
+#import <AVFoundation/AVFoundation.h>   /* CarPlay 会话建立期声明音频类别 */
 
 static NSString *const kMFCarPlayDataDidUpdate = @"MFCarPlayDataDidUpdate";
 
@@ -492,6 +493,33 @@ static id<NSObject> sDataObserverToken = nil;
      *   2) 一个 controller 只发一次 setRootTemplate
      * ==================================================================
      */
+    /*
+     * ============ 11142631：在模板提交前声明音频类别 ============
+     *
+     * 依据：CarPlay 的**模板通道**与**音频通道**是两套独立 XPC，
+     * 但 carplayd 在决定是否接受模板提交时，可能参考 App 是否已声明
+     * 自己是一个完整的音频 App。
+     *
+     * 11142630 日志里音频确实能出声（JS 侧 track-player 建了会话），
+     * 但那发生在 RN 启动之后 —— 而 CarPlay 冷启动时 RN 根本没起来
+     * （bridge init / carPlayJSReady 零出现），所以**在 didConnect 这个
+     * 时刻，进程内还没有任何 AVAudioSession 配置**。
+     *
+     * 这里补一次幂等的类别声明，让 carplayd 在模板提交之前就能看到
+     * "这是一个 playback 类音频 App"。失败不影响主流程（有 @try 兜住）。
+     */
+    @try {
+        AVAudioSession *session = [AVAudioSession sharedInstance];
+        NSError *setErr = nil;
+        BOOL ok = [session setCategory:AVAudioSessionCategoryPlayback
+                           withOptions:AVAudioSessionCategoryOptionAllowBluetooth
+                                 error:&setErr];
+        MFCarPlayLogBoth(@"AVAudioSession setCategory(Playback) ok=%d err=%@ (before root install)",
+              ok, setErr.localizedDescription ?: @"(nil)");
+    } @catch (NSException *e) {
+        MFCarPlayLogBoth(@"AVAudioSession setup threw: %@", e.reason);
+    }
+
     [self installRootIfNeeded];
 
     /*
@@ -538,7 +566,7 @@ static id<NSObject> sDataObserverToken = nil;
         ic = nil;
     }
     if (!ic) {
-        MFCarPlayLogBoth(@"scene KVC returned nil/empty for interfaceController — "
+        MFCarPlayLogBoth(@"scene KVC returned nil/empty for interfaceController - "
                          @"caller will skip rebind (harmless, but note it)");
     }
     return [ic isKindOfClass:[CPInterfaceController class]] ? (CPInterfaceController *)ic : nil;
@@ -639,7 +667,7 @@ static id<NSObject> sDataObserverToken = nil;
 
         if (withinWindow || overQuota) {
             MFCarPlayLogBoth(@"RESET skipped (%@): withinWindow=%d(%.1fs) "
-                             @"resetCount=%lu/%lu overQuota=%d — avoid retry storm",
+                             @"resetCount=%lu/%lu overQuota=%d - avoid retry storm",
                   reason,
                   withinWindow,
                   (_lastResetAt > 0) ? (now - _lastResetAt) : -1.0,
@@ -652,13 +680,10 @@ static id<NSObject> sDataObserverToken = nil;
         _resetCount += 1;
         _lastResetAt = now;
         MFCarPlayLogBoth(@"RESET exhausted on scene reactivation (%@): "
-                         @"same controller, applied=0, framework still not confirming — "
+                         @"same controller, applied=0, framework still not confirming - "
                          @"retry %lu/%lu",
               reason, (unsigned long)_resetCount, (unsigned long)kMFMaxResets);
         _rootExhausted = NO;
-        /* 换 controller / 重置状态：reset 节流额度恢复 */
-        _resetCount = 0;
-        _lastResetAt = 0;
         _rearmCount = 0;
         _rearmPending = NO;
         _rootInstallInFlight = NO;
@@ -776,7 +801,7 @@ static id<NSObject> sDataObserverToken = nil;
 #pragma mark - 首屏占位 / 真实 sections
 
 - (NSArray<CPListSection *> *)placeholderSections {
-    CPListItem *item = [[CPListItem alloc] initWithText:@"正在加载歌单…"
+    CPListItem *item = [[CPListItem alloc] initWithText:@"正在加载歌单..."
                                               detailText:@"请稍候，或在手机上打开一次 MusicFree"];
     __weak __typeof(self) weakSelf = self;
     item.handler = ^(CPListItem * _Nonnull selectedItem, dispatch_block_t completion) {
@@ -967,96 +992,41 @@ static id<NSObject> sDataObserverToken = nil;
     NSUInteger token = _rootGeneration;
     NSUInteger generationAtDispatch = _rearmCount;
 
-    __weak __typeof(self) weakSelf = self;
+    /*
+     * ============ 11142631：completion 传 nil，不再依赖回调 ============
+     *
+     * 依据：上架 App Store 的真实 CarPlay 音频 App（missuo/kumone）用的是
+     *
+     *     interfaceController.setRootTemplate(root, animated: true, completion: nil)
+     *
+     * 而我们一直传 block。11142621 ~ 11142630 连续十版的现象是：
+     *   setRootTemplate 调用发出，但 completion **从不回调**，
+     *   success 不出现、FAILED 也不出现 —— 无响应、无错误、无异常。
+     *
+     * 传 nil 有两个作用：
+     *   1) 排除"框架因为要回调 block 而在内部走了另一条路径"的可能；
+     *   2) 与已知可用的写法对齐，少一个变量。
+     *
+     * 代价：拿不到 error 诊断。所以状态判定改为完全依赖两条独立通道：
+     *   A) CPInterfaceControllerDelegate 的 templateDidAppear:  （权威信号）
+     *   B) watchdog 里 syncAppliedStateFromFramework 读 topTemplate
+     * 这两条在 11142630 的日志里都有大量布点，足够判断。
+     *
+     * 保留 token / generationAtDispatch 是为了日志里区分首发与 rearm。
+     */
     @try {
-        [ic setRootTemplate:list
-                   animated:NO
-                 completion:^(BOOL success, NSError * _Nullable error) {
-                     __strong __typeof(weakSelf) self = weakSelf;
-                     if (!self) {
-                         return;
-                     }
-                     /*
-                      * 晚到回调：不是当前这一代，整包丢弃（不改任何状态）。
-                      * 只留一条日志便于车机上识别竞态是否真的发生。
-                      */
-                     if (token != self->_rootGeneration) {
-                         MFCarPlayLogBoth(@"stale completion dropped (gen %lu != %lu) success=%d",
-                               (unsigned long)token, (unsigned long)self->_rootGeneration, success);
-                         return;
-                     }
-                     /*
-                      * 完整打印失败诊断信息。
-                      *
-                      * 只打 localizedDescription 是不够的：它经常是空串或
-                      * 泛化文本，真正的线索在 domain / code / userInfo 里。
-                      * 例如：
-                      *   domain = CPInterfaceControllerErrorDomain + code = 1
-                      *   -> 模板类型不被该 App 类别接受（音频 App 根模板须为
-                      *      CPListTemplate / CPGridTemplate）
-                      *   domain = NSCocoaErrorDomain / kCFErrorDomainCFNetwork
-                      *   -> 提交阶段 XPC 层就失败了
-                      * 这一条日志是"第 5 步不出现"时唯一的直接证据。
-                      */
-                     if (!success) {
-                         MFCarPlayLogBoth(@"setRootTemplate FAILED localized=%@ domain=%@ code=%ld userInfo=%@ (gen=%lu rearm=%lu)",
-                               error.localizedDescription ?: @"(nil)",
-                               error.domain ?: @"(nil)",
-                               (long)error.code,
-                               error.userInfo ?: @{},
-                               (unsigned long)token,
-                               (unsigned long)generationAtDispatch);
-                     } else {
-                         MFCarPlayLogBoth(@"setRootTemplate success=1 error=(null) (gen=%lu rearm=%lu)",
-                               (unsigned long)token, (unsigned long)generationAtDispatch);
-                     }
-                     self->_rootInstallInFlight = NO;
-                     self->_rearmPending = NO;
-                     if (!success) {
-                         /*
-                          * completion 明确失败：清掉 applied 以允许 watchdog 计数 rearm，
-                          * 但仍向框架核对一次真相（需 _templateReady）。
-                          */
-                         BOOL confirmed = [self syncAppliedStateFromFramework];
-                         if (!confirmed && self->_templateReady) {
-                             self->_rootApplied = NO;
-                         }
-                         return;
-                     }
-                     BOOL wasRearm = generationAtDispatch > 0;
-                     self->_rootApplied = YES;
-                     /* 成功即清 rearm 计数，exhausted / invalidated 状态一并解除 */
-                     self->_rearmCount = 0;
-                     self->_rootExhausted = NO;
-                     self->_controllerInvalidated = NO;
-                     /*
-                      * 握手必然早就结算（rearm 最早发生在 watchdog round 3 = 4.5s），
-                      * 但这里显式置位，不依赖调用顺序 —— refreshRootSections 的
-                      * 数据源是 MFCarPlayBridge 进程级单例，与旧 template 无关，
-                      * 只要 applied=1 且 _templateReady=1 就一定能推成功。
-                      */
-                     self->_templateReady = YES;
-                     if (wasRearm) {
-                         /*
-                          * rearm 用的是**全新 CPListTemplate**，之前 updateSections
-                          * 推给旧模板的数据已经随旧对象丢弃，必须显式再推一次，
-                          * 否则车机上是"原生占位空列表"——不黑屏但没内容。
-                          */
-                         MFCarPlayLogBoth(@"rearm succeeded, repush sections to fresh template");
-                     } else {
-                         MFCarPlayLogBoth(@"initial root succeeded, push sections");
-                     }
-                     [self refreshRootSections];
-                 }];
+        [ic setRootTemplate:list animated:NO completion:nil];
+        MFCarPlayLogBoth(@"setRootTemplate dispatched (completion:nil) gen=%lu rearm=%lu template=%p",
+              (unsigned long)token, (unsigned long)generationAtDispatch,
+              (__bridge void *)list);
     } @catch (NSException *ex) {
+        /*
+         * @try 只挡「向 stale controller 调用瞬间同步抛异常」这一种情况，
+         * 防止 process 被 NSInvalidArgumentException 带走（黑屏变闪退）。
+         * 它保护不了"调用被吞"——那件事交给 watchdog。
+         */
         MFCarPlayLogBoth(@"setRootTemplate threw on stale controller: %@", ex.reason);
         _rootInstallInFlight = NO;
-        _rearmPending = NO;
-        /*
-         * 同步异常计入 rearm 次数（否则次数上限对同步异常不生效）。
-         * 但若是「controller 已失效」这一类，重试注定无效 —— 直接 exhausted，
-         * 不浪费剩余次数（见 didDisconnect 置的 _controllerInvalidated）。
-         */
         if (_controllerInvalidated) {
             _rootExhausted = YES;
             MFCarPlayLogBoth(@"rearm exhausted: controller already invalidated, no more attempts");
@@ -1066,6 +1036,16 @@ static id<NSObject> sDataObserverToken = nil;
         }
         return NO;
     }
+
+    /*
+     * 不设 _rootApplied。它只能由：
+     *   - templateDidAppear:（CPInterfaceControllerDelegate）
+     *   - syncAppliedStateFromFramework 的 topTemplate 核对
+     * 两条通道置位。completion 已经不存在，在这里置位就是瞎猜。
+     *
+     * _rootInstallInFlight 保持 YES 直到 watchdog 或 didAppear 清掉它，
+     * 让 watchdog 的静默失败判定（rootInstallTimedOut）有依据。
+     */
     return YES;
 }
 
@@ -1456,7 +1436,7 @@ static id<NSObject> sDataObserverToken = nil;
     NSArray *tracks = [self tracksForSheet:sheetId];
     NSArray<CPListItem *> *items;
     if (tracks.count == 0) {
-        items = @[[[CPListItem alloc] initWithText:@"加载中…" detailText:@""]];
+        items = @[[[CPListItem alloc] initWithText:@"加载中..." detailText:@""]];
     } else {
         items = [self buildTrackItems:tracks sheetId:sheetId];
     }

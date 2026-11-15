@@ -16,13 +16,12 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142630"
+EXPECTED_VERSION = "11142631"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
     b"connected (phase1)",
     b"native placeholder root installed",
-    b"setRootTemplate success",
     b"one-shot root install armed",
     b"no retry (waiting framework)",
     b"keep root, no reinstall",
@@ -41,7 +40,6 @@ BINARY_MARKERS = [
     b"threw on stale controller",
     b"controller invalidated, stop polling",
     b"controller already invalidated, no more attempts",
-    b"stale completion dropped",
     b"rearm succeeded, repush sections to fresh template",
     b"initial root succeeded, push sections",
     b"didConnect ctrl new=%p old=%p same=%d",
@@ -52,7 +50,6 @@ BINARY_MARKERS = [
     b"didConnect ctrl=%p (template-only audio path)",
     b"ROOT TEMPLATE VISIBLE",
     b"templateDidAppear template=%p isList=",
-    b"setRootTemplate FAILED localized=",
     b"content unchanged, skip updateSections",
     b"CPInterfaceControllerDelegate registered",
     b"data ready sections=",
@@ -75,6 +72,9 @@ BINARY_MARKERS = [
     b"RESET exhausted on scene reactivation",
     b"same controller, applied=0, framework still not confirming",
     b"ready=%d exhausted=%d",
+    b"setRootTemplate dispatched (completion:nil)",
+    b"AVAudioSession setCategory(Playback)",
+    b"ON-SCREEN CONTENT: sectionCount=%lu dataSheets=%lu",
 ]
 
 # 旧版已证伪/致命的标记，产物里绝不能再出现
@@ -95,6 +95,24 @@ JS_MARKERS = [
     "[CarPlay] JS bridge started",
 ]
 
+
+
+def marker_present(binary, m):
+    """CFString 常量编码探测。
+
+    纯 ASCII 的 C 字符串以 UTF-8 落在 __cstring；
+    含非 ASCII 字符（如 em dash —— ）的 NSString 常量会转成 UTF-16LE，
+    只做 UTF-8 字节匹配会把它们全判成缺失。
+    曾因此误报 "RESET exhausted..." 和 "WARN: template on screen ..." 两组标记。
+    """
+    if m in binary:
+        return True
+    try:
+        if m.decode("utf-8").encode("utf-16-le") in binary:
+            return True
+    except Exception:
+        pass
+    return False
 
 def fail(msg: str):
     print(f"FAIL: {msg}")
@@ -154,12 +172,13 @@ def main():
             fail("CarPlay scene delegate mismatch")
 
         binary = read_entry(zf, bin_path)
-        missing_binary = [m.decode("ascii", "replace") for m in BINARY_MARKERS if m not in binary]
+        missing_binary = [m.decode("utf-8", "replace") for m in BINARY_MARKERS
+                          if not marker_present(binary, m)]
         print(f"BinaryMarkers={len(BINARY_MARKERS) - len(missing_binary)}/{len(BINARY_MARKERS)}")
         if missing_binary:
             fail("binary markers missing: " + ", ".join(missing_binary))
 
-        present_old = [m.decode("ascii", "replace") for m in FORBIDDEN_BINARY_MARKERS if m in binary]
+        present_old = [m.decode("utf-8", "replace") for m in FORBIDDEN_BINARY_MARKERS if marker_present(binary, m)]
         print(f"ForbiddenMarkers={len(present_old)}")
         if present_old:
             fail("legacy reinstall-loop markers still present: " + ", ".join(present_old))

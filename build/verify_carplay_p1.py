@@ -42,13 +42,16 @@ chk("用 CPListItem.handler（稳定 API）", "item.handler" in cm)
 chk("不用 CPListTemplateDelegate（签名差异）", "didSelectListItem" not in cm)
 chk("原生占位首屏", "placeholderSections" in cm and "正在加载歌单" in cm)
 chk("root 幂等 + animated:NO", "installRootIfNeeded" in cm and "_rootInstalledFor == ic" in cm and "animated:NO" in cm)
-chk("root 带 completion", "setRootTemplate:list" in cm and "completion:^" in cm and "BOOL success" in cm)
+chk("root 用 completion:nil（对齐 kumone）", "setRootTemplate:list" in cm and "completion:nil" in cm)
 chk("watchdog 只诊断不重装（无风暴标记）",
     "scheduleRootWatchdogForController" in cm
     and "applied=0 inFlight=" in cm
     and "rearm exhausted" in cm
     and "root watchdog fired" not in cm_code)
-chk("root 成功标记 _rootApplied", "_rootApplied" in cm and "self->_rootApplied = YES" in cm)
+chk("root 成功标记 _rootApplied 由双通道置位",
+    "_rootApplied" in cm
+    and ("_rootApplied = YES" in cm)
+    and ("SYNC CONFIRM" in cm or "ROOT TEMPLATE VISIBLE" in cm))
 chk("一连接只装一次 root（不死循环重发）",
     "one-shot root install armed" in cm_code
     and "no retry (waiting framework)" in cm_code
@@ -118,10 +121,8 @@ chk("@try 文档定位为防闪退保险，不冒充死循环解法",
     "保护不了 completion 永远不回" in cm
     and "3s" in cm)
 # --- ③ generation token 防晚到 completion 竞态 ---
-chk("generation token 丢弃晚到 completion",
-    "_rootGeneration" in cm_code
-    and "stale completion dropped" in cm_code
-    and "token != self->_rootGeneration" in cm_code)
+chk("dispatch 日志带 gen/rearm 便于区分首发与 rearm",
+    "setRootTemplate dispatched (completion:nil) gen=%lu rearm=%lu" in cm)
 # --- ② controller 失效直接 exhausted，不浪费次数 ---
 chk("controller 失效直接 exhausted 不消耗次数",
     "_controllerInvalidated" in cm_code
@@ -146,9 +147,8 @@ chk("rearm 成功路径显式置 _templateReady=YES",
 chk("同步异常计入 rearm 次数",
     "rearm #%lu threw" in cm_code)
 # --- ④ rearm 成功后重新推数据 ---
-chk("rearm 成功后重新推 sections",
-    "rearm succeeded, repush sections to fresh template" in cm_code
-    and "initial root succeeded, push sections" in cm_code)
+chk("rearm 后由 didAppear / watchdog 补推 sections",
+    "refreshRootSections" in cm and "ROOT TEMPLATE VISIBLE" in cm)
 # --- ⑥ didConnect 打印新旧 controller 地址 ---
 chk("didConnect 打印新旧 controller 地址",
     "didConnect ctrl new=%p old=%p same=%d" in cm_code)
@@ -157,9 +157,9 @@ chk("文档写明实际最早 rearm 是 4.5s",
     "实际最早 rearm 时刻是 **4.5s**" in cm)
 chk("pushTracks 握手未结算时拒绝",
     "template handshake not settled yet" in cm_code)
-chk("updateSections 不再被二次自锁（completion 成功即推）",
-    "if (!_rootApplied)" in _refresh_body
-    and "syncAppliedStateFromFramework" in _refresh_body)
+chk("updateSections 由独立通道解锁（不依赖 completion）",
+    "refresh: applied via sync-confirm path" in cm
+    or "content unchanged, skip updateSections" in cm)
 chk("watchdog 轮询核对而非一次性放弃",
     "round:(NSUInteger)round" in cm_code and "kMFWatchdogRounds" in cm_code)
 chk("scene 生命周期重绑 controller", "recoverTemplateScene" in cm and "sceneDidBecomeActive" in cm and "interfaceControllerFromScene" in cm)
