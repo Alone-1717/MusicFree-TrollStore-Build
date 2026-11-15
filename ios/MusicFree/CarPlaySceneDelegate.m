@@ -169,6 +169,49 @@ static id<NSObject> sDataObserverToken = nil;
  *
  * 只加在子页面（歌单/曲目/搜索/播放），主界面不需要。
  */
+/*
+ * 11142653：统一主题色（对齐用户截图里的浅蓝 #4A9EFF）。
+ * 系统 [UIColor blueColor] 偏深，车机屏上不好看。
+ */
+/*
+ * 11142653：通用封面异步加载。
+ *
+ * 所有列表（歌单/曲目/最近播放）都要显示封面缩略图，
+ * 抽成全局函数避免每个类重复实现。
+ *
+ *   urlStr   封面地址
+ *   cell     目标 UITableVeiwCell（用它的 imageView）
+ *
+ * 失败静默（网络差就不显示图，不影响文字）。
+ */
+static void MFLoadCoverIntoCell(NSString *urlStr, UITableViewCell *cell) {
+    if (![urlStr isKindOfClass:[NSString class]] || urlStr.length == 0 || !cell) {
+        return;
+    }
+    NSURL *url = [NSURL URLWithString:urlStr];
+    if (!url) {
+        return;
+    }
+    __weak UITableViewCell *weakCell = cell;
+    dispatch_async(dispatch_get_global_queue(0, 0), ^{
+        NSData *data = [NSData dataWithContentsOfURL:url];
+        UIImage *img = data ? [UIImage imageWithData:data] : nil;
+        if (!img) {
+            return;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong UITableViewCell *c = weakCell;
+            if (c) {
+                c.imageView.image = img;
+            }
+        });
+    });
+}
+
+static UIColor *MFCarPlayAccentColor(void) {
+    return [UIColor colorWithRed:0.29 green:0.62 blue:1.00 alpha:1.0];
+}
+
 static void MFAddBackButton(UIViewController *vc) {
     UIButton *b = [UIButton buttonWithType:0];
     [b setTitle:@"\u2190" forState:0];
@@ -233,6 +276,8 @@ static void MFAddBackButton(UIViewController *vc) {
 @interface MFCarPlayWindowNowPlayingVC : UIViewController
 @property (nonatomic, weak) MFCarPlaySceneDelegate *carPlayDelegate;
 @property (nonatomic, strong) NSDictionary *nowPlaying;
+/* 11142653：封面背景层（模糊 + 半透明黑遮罩，避免纯黑单调） */
+@property (nonatomic, strong) UIImageView *backgroundImageView;
 /* 子控件 */
 @property (nonatomic, strong) UIImageView *coverView;
 @property (nonatomic, strong) UILabel *titleLabel;
@@ -299,12 +344,27 @@ static void MFAddBackButton(UIViewController *vc) {
     [self.view addSubview:self.table];
 
     /* ---- 搜索框（仅 tab=1 显示）---- */
+    /*
+     * 11142653：搜索框修复。
+     *
+     * 原问题（用户反馈图六）：hidden=YES 后 AutoLayout 让控件塌缩，
+     * 即使切到搜索 tab 也点不到、看不到、唤不起键盘。
+     *
+     * 改法：
+     *   - 不用 hidden，改用 alpha + userInteractionEnabled 控制
+     *   - 始终占位（约束不变），只是视觉上隐藏
+     *   - 加白色边框，让用户能看清输入区域
+     */
     self.searchField = [[UITextField alloc] init];
-    self.searchField.placeholder = @"搜索";
+    self.searchField.placeholder = @"输入歌名或歌手";
     self.searchField.textColor = [UIColor whiteColor];
     self.searchField.backgroundColor = [UIColor blackColor];
+    self.searchField.layer.borderColor = [UIColor whiteColor].CGColor;
+    self.searchField.layer.borderWidth = 1.0;
+    self.searchField.layer.cornerRadius = 8.0;
     self.searchField.translatesAutoresizingMaskIntoConstraints = NO;
-    self.searchField.hidden = YES;
+    self.searchField.alpha = 0.0;
+    self.searchField.userInteractionEnabled = NO;
     self.searchField.delegate = self;
     self.searchField.returnKeyType = 0;
     [self.searchField addTarget:self
@@ -339,14 +399,14 @@ static void MFAddBackButton(UIViewController *vc) {
         [cons addObject:[prev.trailingAnchor constraintEqualToAnchor:self.tabBar.trailingAnchor]];
     }
 
-    /* 搜索框 */
+    /* 搜索框（在 tabBar 下方固定高度，始终占位） */
     [cons addObject:[self.searchField.topAnchor constraintEqualToAnchor:self.tabBar.bottomAnchor constant:8]];
     [cons addObject:[self.searchField.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:16]];
     [cons addObject:[self.searchField.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-16]];
     [cons addObject:[self.searchField.heightAnchor constraintEqualToConstant:44]];
 
-    /* 表格在 tabBar 下方 */
-    [cons addObject:[self.table.topAnchor constraintEqualToAnchor:self.tabBar.bottomAnchor constant:8]];
+    /* 表格在搜索框下方（始终，搜索框透明时视觉上等于贴顶） */
+    [cons addObject:[self.table.topAnchor constraintEqualToAnchor:self.searchField.bottomAnchor constant:8]];
     [cons addObject:[self.table.bottomAnchor constraintEqualToAnchor:v.bottomAnchor]];
     [cons addObject:[self.table.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:16]];
     [cons addObject:[self.table.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-16]];
@@ -395,7 +455,7 @@ static void MFAddBackButton(UIViewController *vc) {
 - (void)refreshTabAppearance {
     for (UIButton *b in self.tabButtons) {
         BOOL sel = (b.tag == self.selectedTab);
-        UIColor *c = sel ? [UIColor blueColor] : [UIColor whiteColor];
+        UIColor *c = sel ? MFCarPlayAccentColor() : [UIColor whiteColor];
         [b setTitleColor:c forState:0];
         b.titleLabel.font = [UIFont systemFontOfSize:(sel ? 24.0 : 21.0)];
     }
@@ -409,8 +469,10 @@ static void MFAddBackButton(UIViewController *vc) {
     self.selectedTab = tag;
     [self refreshTabAppearance];
 
-    /* 搜索框只在 tab=1 显示 */
-    self.searchField.hidden = (tag != 1);
+    /* 搜索框只在 tab=1 显示（用 alpha 避免布局塌陷） */
+    BOOL showSearch = (tag == 1);
+    self.searchField.alpha = showSearch ? 1.0 : 0.0;
+    self.searchField.userInteractionEnabled = showSearch;
 
     /* 切 tab 时重载数据 */
     if (tag == 0) {
@@ -477,15 +539,23 @@ static void MFAddBackButton(UIViewController *vc) {
     cell.detailTextLabel.textColor = [UIColor whiteColor];
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
 
-    /* 封面缩略图：异步下载，失败不影响文字 */
-    NSString *cover = [item[@"coverImg"] isKindOfClass:[NSString class]]
-        ? item[@"coverImg"] : nil;
-    if (!cover) {
+    /*
+     * 11142653: cover thumbnail for all three tabs.
+     *   tab 0 (sheets)  -> coverImg (sheet cover, or first track artwork)
+     *   tab 1 (search)  -> artwork
+     *   tab 2 (history) -> artwork
+     */
+    NSString *cover = nil;
+    if (self.selectedTab == 0) {
+        cover = [item[@"coverImg"] isKindOfClass:[NSString class]]
+            ? item[@"coverImg"] : nil;
+    }
+    if (cover.length == 0) {
         cover = [item[@"artwork"] isKindOfClass:[NSString class]]
             ? item[@"artwork"] : nil;
     }
     if (cover.length > 0) {
-        [self loadCover:cover forCell:cell];
+        MFLoadCoverIntoCell(cover, cell);
     }
 
     return cell;
@@ -576,6 +646,7 @@ static void MFAddBackButton(UIViewController *vc) {
 
 - (void)viewDidLoad {
     MFAddBackButton(self);
+    MFAddBackButton(self);
     [super viewDidLoad];
 
     self.title = self.sheetTitle ?: @"曲目";
@@ -627,6 +698,11 @@ static void MFAddBackButton(UIViewController *vc) {
         cell.textLabel.font = [UIFont systemFontOfSize:19.0];
         cell.detailTextLabel.text = ar;
         cell.detailTextLabel.textColor = [UIColor whiteColor];
+
+        /* 11142653: 每首曲目前面显示封面（用户图七样式） */
+        NSString *cover = [tr[@"artwork"] isKindOfClass:[NSString class]]
+            ? tr[@"artwork"] : nil;
+        MFLoadCoverIntoCell(cover, cell);
     }
     return cell;
 }
@@ -2523,10 +2599,42 @@ static void MFAddBackButton(UIViewController *vc) {
 
 - (void)viewDidLoad {
     MFAddBackButton(self);
+    MFAddBackButton(self);
     [super viewDidLoad];
 
     self.title = @"";
     self.view.backgroundColor = [UIColor blackColor];
+
+    /*
+     * 11142653：封面作背景。
+     *
+     * 用户反馈纯黑不好看。所以：
+     *   1) 铺一张全屏 UIImageView 在底层（内容模式 aspectFill）
+     *   2) 上面盖一层半透明黑（alpha 0.55），保证文字可读
+     * 封面下载成功后填充，失败则是纯黑 + 遮罩（不影响其他控件）
+     */
+    self.backgroundImageView = [[UIImageView alloc] init];
+    self.backgroundImageView.contentMode = UIViewContentModeScaleAspectFill;
+    self.backgroundImageView.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.backgroundImageView];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.backgroundImageView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [self.backgroundImageView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [self.backgroundImageView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.backgroundImageView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+    ]];
+
+    UIView *dim = [[UIView alloc] init];
+    dim.backgroundColor = [UIColor blackColor];
+    dim.alpha = 0.55;
+    dim.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:dim];
+    [NSLayoutConstraint activateConstraints:@[
+        [dim.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [dim.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [dim.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [dim.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+    ]];
 
     /*
      * 11142651：无边框播放页 —— 去掉导航栏，全屏沉浸。
@@ -2591,6 +2699,9 @@ static void MFAddBackButton(UIViewController *vc) {
                     __strong __typeof(weakSelf) s = weakSelf;
                     if (s) {
                         s.coverView.image = img;
+                        /* 11142653：同一张图铺满背景 */
+                        s.backgroundImageView.image = img;
+                        s.view.backgroundColor = [UIColor blackColor];
                         MFCarPlayLogBoth(@"NOWPLAYING cover loaded %lu bytes",
                               (unsigned long)data.length);
                     }

@@ -299,11 +299,23 @@ static NSDictionary *MFNormalizeTrack(NSDictionary *d) {
     NSString *platform = [d[@"platform"] isKindOfClass:[NSString class]]
         ? d[@"platform"] : @"";
 
+    /*
+     * 11142653: include artwork/album so the CarPlay lists can show covers.
+     * History (music.MusicHistory) items do carry artwork, but the old
+     * normalizer dropped it, which is why the 最近播放 tab had no covers.
+     */
+    NSString *artwork = [d[@"artwork"] isKindOfClass:[NSString class]]
+        ? d[@"artwork"] : @"";
+    NSString *album = [d[@"album"] isKindOfClass:[NSString class]]
+        ? d[@"album"] : @"";
+
     return @{
         @"id": tid,
         @"title": title,
         @"artist": artist,
         @"platform": platform,
+        @"artwork": artwork ?: @"",
+        @"album": album ?: @"",
     };
 }
 
