@@ -233,10 +233,10 @@ chk("CarPlay delegateClass=MFCarPlaySceneDelegate", c and c[0].get("UISceneDeleg
 chk("允许多场景（CarPlay + 主界面共存）",
     (pl.get("UIApplicationSceneManifest") or {}).get("UIApplicationSupportsMultipleScenes") is True)
 ad = io.open(os.path.join(ROOT, "ios", "MusicFree", "AppDelegate.mm"), encoding="utf-8").read()
-chk("AppDelegate 按 role 分发 scene 配置",
+chk("AppDelegate 保留 configurationForConnecting 但交给 plist",
     "configurationForConnectingSceneSession" in ad
-    and "CPTemplateApplicationSceneSessionRoleApplication" in ad
-    and "[MFCarPlaySceneDelegate class]" in ad)
+    and "return nil;" in ad
+    and "delegate to Info.plist" in ad)
 
 # 8) 既有自检
 r = subprocess.run(["node", "scripts/verify-ios-patch.mjs"], cwd=ROOT, capture_output=True, timeout=120)
@@ -282,22 +282,19 @@ chk("reset 条件是三条同时成立",
     "!_rootApplied && !confirmed && _rootExhausted" in cm)
 chk("reset 后清 rearmCount", "_rootExhausted = NO;" in cm)
 chk("lifecycle 日志含 exhausted 字段", "ready=%d exhausted=%d" in cm)
-# ============ 11142636：configurationForConnecting 必须补齐 sceneClass ============
-# 只设 delegateClass 不设 sceneClass -> 系统拿到的 config 里 sceneClass 为空
-# -> 场景不是用 CPTemplateApplicationScene 实例化
-# -> didConnect 能进来但 CPInterfaceController 是半连接对象
-# -> setRootTemplate 静默无响应（十轮以来的现象）
+# ============ 11142639：完全交给 Info.plist（kumone 做法）============
+# 十轮里 configurationForConnecting 的所有程序化变体都试过了（只设 delegateClass /
+# 补 sceneClass / 空模板+sceneClass），全部半连接。参考实现 kumone 全文 0 次实现
+# 这个方法，纯靠 Info.plist 查表。本轮改为 return nil，让系统自己查。
 _ad = io.open(os.path.join(ROOT, "ios", "MusicFree", "AppDelegate.mm"), encoding="utf-8").read()
 _adc = re.sub(r"/\*[\s\S]*?\*/", "", _ad)
 _adc = re.sub(r"//[^\n]*", "", _adc)
-chk("CarPlay role 设置 sceneClass = CPTemplateApplicationScene",
-    "config.sceneClass = [CPTemplateApplicationScene class];" in _adc)
-chk("主 role 设置 sceneClass = UIWindowScene",
-    "config.sceneClass = [UIWindowScene class];" in _adc)
-chk("delegateClass 仍保留",
-    "config.delegateClass = [MFCarPlaySceneDelegate class];" in _adc)
-chk("全项目不再出现「sceneClass 从未设置」",
-    _adc.count("sceneClass") >= 2)
+chk("configurationForConnecting 返回 nil（交给 Info.plist）",
+    "return nil;" in _adc and "delegate to Info.plist" in _ad)
+chk("不再程序化构造 UISceneConfiguration",
+    "initWithName:" not in _adc)
+chk("不再设置 sceneClass / delegateClass",
+    "sceneClass" not in _adc and "delegateClass" not in _adc)
 
 print("=" * 50)
 print("Phase 1 static check:", "ALL PASS" if ok else "FAILED")

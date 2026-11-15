@@ -45,60 +45,41 @@
                                    options:(UISceneConnectionOptions *)options API_AVAILABLE(ios(13.0))
 {
     NSString *role = connectingSceneSession.role;
-    BOOL isCarPlay = NO;
-    if (@available(iOS 14.0, *)) {
-        isCarPlay = [role isEqualToString:CPTemplateApplicationSceneSessionRoleApplication];
-    }
-
-    NSString *name = isCarPlay ? @"CarPlay" : @"Default Configuration";
-    UISceneConfiguration *config =
-        [[UISceneConfiguration alloc] initWithName:name sessionRole:role];
 
     /*
-     * ============ 11142636：必须显式设置 sceneClass ============
+     * ============ 11142639：完全交给 Info.plist（kumone 的做法）============
      *
-     * 这是本次排查第十轮才找到的机制性缺陷，能解释"didConnect 能进来、
-     * setRootTemplate 却静默无响应"的全部现象。
+     * 十轮演进到这里，程序化构造 config 的所有变体都试过了：
+     *   - 只设 delegateClass            -> 半连接（11142635 及之前）
+     *   - 补 sceneClass                 -> 仍半连接（11142636/11142637）
+     *   - 空模板 + sceneClass           -> 仍半连接（11142638 Demo 实证）
      *
-     * 问题：
-     *   [[UISceneConfiguration alloc] initWithName:sessionRole:] 构造出的是
-     *   **全新的空配置**，它不会从 Info.plist 继承 UISceneClassName。
-     *   我们只设了 delegateClass，sceneClass 一直是 nil ——
-     *   全项目搜索 "sceneClass" 零命中，从来没设过。
+     * 而参考实现（missuo/kumone，上架 App Store 的 CarPlay 音频 App）
+     * 全文 **0 次** 实现 configurationForConnectingSceneSession /
+     * UISceneConfiguration —— 它完全依赖 Info.plist 的
+     * UISceneConfigurations 让系统自己查表。
      *
-     * 后果推演：
-     *   系统拿到的 config 里 sceneClass 为空 => 无法用
-     *   CPTemplateApplicationScene 去实例化场景。
-     *   但 delegateClass 有值 => delegate 方法照样被调用，
-     *   于是 didConnect 能进来、CPInterfaceController 却不是真实的
-     *   模板场景控制器 —— 一个"半连接"对象。
-     *   setRootTemplate 打过去自然无响应、无错误、无 completion，
-     *   topTemplate 也永远不确认。
+     * 返回 nil 的语义（UIKit 文档）：系统会去 Info.plist 的
+     * UIApplicationSceneManifest -> UISceneConfigurations 里，
+     * 按 connectingSceneSession.role 查找匹配的配置项并使用它。
+     * 这样 UISceneClassName / UISceneDelegateClassName 全部由 plist 决定，
+     * 零手工干预，和 kumone 完全一致。
      *
-     *   这与十版以来的日志完全吻合。
+     * 我们当前 Info.plist 已确认配置完整：
+     *   CPTemplateApplicationSceneSessionRoleApplication -> {
+     *     UISceneConfigurationName    = "CarPlay"
+     *     UISceneClassName            = "CPTemplateApplicationScene"
+     *     UISceneDelegateClassName    = "MFCarPlaySceneDelegate"
+     *   }
+     *   UIWindowSceneSessionRoleApplication -> {
+     *     UISceneConfigurationName    = "Default Configuration"
+     *     UISceneDelegateClassName    = "AppDelegate"
+     *   }
      *
-     * 参考实现（missuo/kumone）根本不实现这个方法（全文 0 次
-     * configurationForConnecting / UISceneConfiguration），
-     * 完全依赖 Info.plist。我们在程序里拦了一手，却没把配置补全。
-     *
-     * 修法：两个 role 都把 sceneClass 显式补齐。
-     *   - CarPlay -> CPTemplateApplicationScene（模板场景）
-     *   - 主界面  -> UIWindowScene（UIKit 默认，显式写出来更稳）
+     * 唯一变量：从"程序构造 config"改为"让 plist 查表"。
      */
-    if (isCarPlay) {
-        config.delegateClass = [MFCarPlaySceneDelegate class];
-        if (@available(iOS 14.0, *)) {
-            config.sceneClass = [CPTemplateApplicationScene class];
-        }
-        NSLog(@"[MusicFree] scene config -> CarPlay delegate + CPTemplateApplicationScene");
-    } else {
-        config.delegateClass = [AppDelegate class];
-        if (@available(iOS 13.0, *)) {
-            config.sceneClass = [UIWindowScene class];
-        }
-        NSLog(@"[MusicFree] scene config -> main app delegate role=%@ sceneClass=UIWindowScene", role);
-    }
-    return config;
+    NSLog(@"[MusicFree] scene config -> delegate to Info.plist for role=%@", role);
+    return nil;
 }
 
 #pragma mark - UISceneDelegate (main app window)
