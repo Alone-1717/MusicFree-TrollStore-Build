@@ -4512,8 +4512,9 @@ static dispatch_source_t sGCDPollTimer = NULL;
         [self.artistLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(80)],
 
         [self.progressView.bottomAnchor constraintEqualToAnchor:v.bottomAnchor constant:-MFL(@"progressBottom", 18)],
-        [self.progressView.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFL(@"progressSide", 40)],
-        [self.progressView.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFL(@"progressSide", 40)],
+        /* 11142706：左右边距拆开，可分别调（往右移就加大 progressLeft） */
+            [self.progressView.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFL(@"progressLeft", 40)],
+        [self.progressView.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFL(@"progressRight", 40)],
         [self.progressView.heightAnchor constraintEqualToConstant:MFL(@"progressHeight", 6)],
 
         [self.timeLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFL(@"timeSide", 98)],
