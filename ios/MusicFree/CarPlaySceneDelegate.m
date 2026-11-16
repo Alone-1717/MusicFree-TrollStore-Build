@@ -441,7 +441,7 @@ static void MFApplyPauseIcon(UIButton *btn) {
 
     CAShapeLayer *layer = [CAShapeLayer layer];
     layer.name = @"mfPauseLayer";
-    layer.fillColor = (__bridge CGColorRef)[UIColor whiteColor].CGColor;
+    layer.fillColor = [UIColor whiteColor].CGColor;
 
     UIBezierPath *path = [UIBezierPath bezierPath];
     UIBezierPath *left = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(x0, y0, barW, barH)
@@ -479,7 +479,7 @@ static void MFApplyPlayIcon(UIButton *btn) {
 
     CAShapeLayer *layer = [CAShapeLayer layer];
     layer.name = @"mfPauseLayer";
-    layer.fillColor = (__bridge CGColorRef)[UIColor whiteColor].CGColor;
+    layer.fillColor = [UIColor whiteColor].CGColor;
 
     UIBezierPath *path = [UIBezierPath bezierPath];
     [path moveToPoint:CGPointMake(cx - triW / 2.0, cy - triH / 2.0)];
