@@ -469,10 +469,26 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     }
     self.targetField = field;
     self.backgroundColor = [UIColor colorWithRed:0.13 green:0.13 blue:0.14 alpha:1.0];
-    self.layer.cornerRadius = 8.0;
+    self.layer.cornerRadius = MFS(10.0);
     self.layer.masksToBounds = YES;
 
-    /* 三行字母 */
+    /*
+     * ============ 11142668：键盘布局重做 ============
+     *
+     * 原问题（用户截图）：按键贴到左边缘、右侧大片空白、行间不对齐。
+     *
+     * 根因：按键宽度固定 MFS(88)，但每行按键数不同
+     *   第1行 10 键 -> 10*88 + 9*8 = 952
+     *   第2行  9 键 ->  9*88 + 8*8 = 856
+     *   第3行  7 键 ->  7*88 + 6*8 = 664   <- 只占 664，右边空一大片
+     *
+     * 修法：每行按键等分剩余宽度。
+     *   1) 每行容器左右各留 10 边距
+     *   2) 按键之间 8 间距
+     *   3) 按键宽度 = (行宽 - 间距总和) / 键数   -> 用 equalToAnchor 实现
+     *
+     * 这样三行都撑满，视觉上居中对齐。
+     */
     NSArray<NSArray<NSString *> *> *rows = @[
         @[@"Q", @"W", @"E", @"R", @"T", @"Y", @"U", @"I", @"O", @"P"],
         @[@"A", @"S", @"D", @"F", @"G", @"H", @"J", @"K", @"L"],
@@ -481,6 +497,8 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
     UIFont *keyFont = MFFont(22.0);
     UIColor *keyBg = [UIColor colorWithRed:0.25 green:0.25 blue:0.27 alpha:1.0];
+    CGFloat gap = MFS(8);
+    CGFloat sidePad = MFS(10);
 
     UIView *prevRow = nil;
     for (NSUInteger r = 0; r < rows.count; r++) {
@@ -488,14 +506,16 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         row.translatesAutoresizingMaskIntoConstraints = NO;
         [self addSubview:row];
 
-        UIView *prevKey = nil;
+        UIButton *prevKey = nil;
+        UIButton *firstKey = nil;
+
         for (NSString *ch in rows[r]) {
             UIButton *k = [UIButton buttonWithType:0];
             [k setTitle:ch forState:0];
             [k setTitleColor:[UIColor whiteColor] forState:0];
             k.titleLabel.font = keyFont;
             k.backgroundColor = keyBg;
-            k.layer.cornerRadius = 6.0;
+            k.layer.cornerRadius = MFS(6.0);
             k.translatesAutoresizingMaskIntoConstraints = NO;
             [k addTarget:self action:@selector(onLetter:) forControlEvents:64];
             [row addSubview:k];
@@ -503,28 +523,34 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
             [NSLayoutConstraint activateConstraints:@[
                 [k.topAnchor constraintEqualToAnchor:row.topAnchor],
                 [k.bottomAnchor constraintEqualToAnchor:row.bottomAnchor],
-                [k.widthAnchor constraintEqualToConstant:MFS(88)],
             ]];
+
             if (prevKey) {
-                [NSLayoutConstraint activateConstraints:@[[k.leadingAnchor constraintEqualToAnchor:prevKey.trailingAnchor constant:8]]];
+                /* 宽度与第一个键相同（等分），左边接上一个键 */
+                [NSLayoutConstraint activateConstraints:@[
+                    [k.leadingAnchor constraintEqualToAnchor:prevKey.trailingAnchor constant:gap],
+                    [k.widthAnchor constraintEqualToAnchor:firstKey.widthAnchor],
+                ]];
             } else {
                 [NSLayoutConstraint activateConstraints:@[[k.leadingAnchor constraintEqualToAnchor:row.leadingAnchor]]];
+                firstKey = k;
             }
             prevKey = k;
         }
+        /* 最后一个键贴右边界 -> 整行自动等分 */
         if (prevKey) {
-            [NSLayoutConstraint activateConstraints:@[[prevKey.trailingAnchor constraintLessThanOrEqualToAnchor:row.trailingAnchor]]];
+            [NSLayoutConstraint activateConstraints:@[[prevKey.trailingAnchor constraintEqualToAnchor:row.trailingAnchor]]];
         }
 
         [NSLayoutConstraint activateConstraints:@[
-            [row.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:8],
-            [row.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-8],
+            [row.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:sidePad],
+            [row.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-sidePad],
             [row.heightAnchor constraintEqualToConstant:MFS(46)],
         ]];
         if (prevRow) {
-            [NSLayoutConstraint activateConstraints:@[[row.topAnchor constraintEqualToAnchor:prevRow.bottomAnchor constant:8]]];
+            [NSLayoutConstraint activateConstraints:@[[row.topAnchor constraintEqualToAnchor:prevRow.bottomAnchor constant:gap]]];
         } else {
-            [NSLayoutConstraint activateConstraints:@[[row.topAnchor constraintEqualToAnchor:self.topAnchor constant:8]]];
+            [NSLayoutConstraint activateConstraints:@[[row.topAnchor constraintEqualToAnchor:self.topAnchor constant:MFS(10)]]];
         }
         prevRow = row;
     }
@@ -535,8 +561,8 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     [self addSubview:funcRow];
 
     UIButton *del = [self makeFuncButton:@"\u232B" action:@selector(onDelete)];
-    UIButton *space = [self makeFuncButton:@"空格" action:@selector(onSpace)];
-    UIButton *clr = [self makeFuncButton:@"清除" action:@selector(onClear)];
+    UIButton *space = [self makeFuncButton:@"\u7a7a\u683c" action:@selector(onSpace)];
+    UIButton *clr = [self makeFuncButton:@"\u6e05\u9664" action:@selector(onClear)];
     for (UIButton *b in @[del, space, clr]) {
         [funcRow addSubview:b];
         [NSLayoutConstraint activateConstraints:@[
@@ -545,21 +571,21 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         ]];
     }
     [NSLayoutConstraint activateConstraints:@[
+        /* 退格和清除等宽，空格自动撑满中间 */
         [del.leadingAnchor constraintEqualToAnchor:funcRow.leadingAnchor],
-        [del.widthAnchor constraintEqualToConstant:MFS(150)],
+        [del.widthAnchor constraintEqualToConstant:MFS(140)],
 
-        [space.leadingAnchor constraintEqualToAnchor:del.trailingAnchor constant:8],
-        [space.trailingAnchor constraintEqualToAnchor:clr.leadingAnchor constant:-8],
-        [space.widthAnchor constraintGreaterThanOrEqualToConstant:MFS(200)],
+        [space.leadingAnchor constraintEqualToAnchor:del.trailingAnchor constant:gap],
+        [space.trailingAnchor constraintEqualToAnchor:clr.leadingAnchor constant:-gap],
 
         [clr.trailingAnchor constraintEqualToAnchor:funcRow.trailingAnchor],
-        [clr.widthAnchor constraintEqualToConstant:MFS(150)],
+        [clr.widthAnchor constraintEqualToAnchor:del.widthAnchor],
 
-        [funcRow.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:8],
-        [funcRow.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-8],
+        [funcRow.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:sidePad],
+        [funcRow.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-sidePad],
         [funcRow.heightAnchor constraintEqualToConstant:MFS(46)],
-        [funcRow.topAnchor constraintEqualToAnchor:prevRow.bottomAnchor constant:8],
-        [funcRow.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-8],
+        [funcRow.topAnchor constraintEqualToAnchor:prevRow.bottomAnchor constant:gap],
+        [funcRow.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-MFS(10)],
     ]];
 
     return self;
@@ -956,6 +982,14 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     self.searchField.layer.borderColor = [UIColor whiteColor].CGColor;
     self.searchField.layer.borderWidth = 1.0;
     self.searchField.layer.cornerRadius = 8.0;
+    /*
+     * 11142668：搜索框内左边距。
+     *
+     * 用户反馈「输入歌名或歌手」贴框边太紧。
+     * 简化方案：把 placeholder 本身加个前缀空格 + 加大左边距约束。
+     */
+    self.searchField.placeholder = @"   输入歌名或歌手";
+
     self.searchField.translatesAutoresizingMaskIntoConstraints = NO;
     self.searchField.alpha = 0.0;
     self.searchField.userInteractionEnabled = NO;
@@ -1164,6 +1198,16 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
 - (void)onTabTap:(UIButton *)sender {
     NSInteger tag = sender.tag;
+
+    /*
+     * 11142668：边界检查。
+     * tag 来自按钮，理论上 0..3，但防御性检查避免越界。
+     */
+    if (tag < 0 || tag > 3) {
+        MFCarPlayLogBoth(@"ROOT tab IGNORED: bad tag=%ld", (long)tag);
+        return;
+    }
+
     if (tag == self.selectedTab) {
         return;
     }
@@ -1299,16 +1343,24 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 #pragma mark UITableViewDataSource
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (self.selectedTab == 1) {
-        return (NSInteger)self.results.count;
+    /*
+     * 11142668：四个 tab 显式映射，和 cellForRow 的数据源严格对应。
+     *   0 歌曲列表 -> sheets
+     *   1 搜索     -> results
+     *   2 榜单     -> topLists
+     *   3 最近播放 -> sheets
+     *
+     * 任何 data 为 nil 都返回 0，避免 UITableView 拿到负数。
+     */
+    NSInteger n = 0;
+    if (self.selectedTab == 0 || self.selectedTab == 3) {
+        n = (NSInteger)self.sheets.count;
+    } else if (self.selectedTab == 1) {
+        n = (NSInteger)self.results.count;
+    } else if (self.selectedTab == 2) {
+        n = (NSInteger)self.topLists.count;
     }
-    if (self.selectedTab == 2) {
-        return (NSInteger)self.topLists.count;   /* 11142662：榜单 */
-    }
-    if (self.selectedTab == 3) {
-        return (NSInteger)self.sheets.count;     /* 最近播放 */
-    }
-    return (NSInteger)self.sheets.count;         /* 歌单 */
+    return n < 0 ? 0 : n;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView
@@ -1495,6 +1547,24 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     [self.navigationController pushViewController:np animated:YES];
 }
 
+/*
+ * ============ 11142668：移除通知观察者 ============
+ *
+ * 严重隐患：之前 RootVC 注册了 2 个通知观察者但从未移除。
+ * VC 被 pop/释放后，桥再发通知就会发给野指针 -> 闪退。
+ *
+ * dealloc 里必须 removeObserver，这是 ObjC 通知机制的铁律。
+ */
+- (void)dealloc {
+    /* 取消待执行的搜索定时器，否则回调会访问已释放的 self */
+    if (self.searchDebounceTimer) {
+        [self.searchDebounceTimer invalidate];
+        self.searchDebounceTimer = nil;
+    }
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    MFCarPlayLogBoth(@"ROOT dealloc");
+}
+
 @end
 
 @implementation MFCarPlayWindowTracksVC
@@ -1631,10 +1701,10 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
      *      直接用它构造播放页，完全不读 MMKV。
      *      JS 回传最新状态后（handleNowPlayingState）会再修正。
      */
-    NSDictionary *picked = self.tracks[(NSUInteger)indexPath.row];
+    /* 11142668：复用上面已取的 tr，避免重复下标访问 */
     MFCarPlayWindowNowPlayingVC *np = [[MFCarPlayWindowNowPlayingVC alloc] init];
     np.carPlayDelegate = self.carPlayDelegate;
-    np.nowPlaying = [self optimisticNowPlayingFromTrack:picked];
+    np.nowPlaying = [self optimisticNowPlayingFromTrack:tr];
     [self.navigationController pushViewController:np animated:YES];
 }
 
@@ -3526,6 +3596,25 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
 #pragma mark - 11142649：歌单列表页
 
+/*
+ * ============ 11142668：清理资源 ============
+ *
+ * SceneDelegate 用 block 式观察者（addObserverForName:...usingBlock:），
+ * 返回值 token 保存在 windowDataObserver 里。
+ *
+ * 虽然 block 里用了 weakSelf（不会野指针），
+ * 但 token 不释放会一直占着通知中心，属于资源泄漏。
+ * dealloc 里移除。
+ */
+- (void)dealloc {
+    if (self.windowDataObserver) {
+        [[NSNotificationCenter defaultCenter] removeObserver:self.windowDataObserver];
+        self.windowDataObserver = nil;
+    }
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    MFCarPlayLogBoth(@"SCENE DELEGATE dealloc");
+}
+
 @end
 
 
@@ -3658,6 +3747,12 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 - (void)onBack {
     MFCarPlayLogBoth(@"%@ tap BACK", @"MFCarPlayWindowTopListVC");
     [self.navigationController popViewControllerAnimated:YES];
+}
+
+/* 11142668：移除观察者，防止野指针闪退 */
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    MFCarPlayLogBoth(@"TOPLIST dealloc");
 }
 
 @end
@@ -4356,6 +4451,12 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         [self refreshLyricHighlight];
     }
     MFCarPlayLogBoth(@"NOWPLAYING lyric updated: %lu lines", (unsigned long)lines.count);
+}
+
+/* 11142668：移除观察者 + 取消待执行的定时器，防止野指针闪退 */
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    MFCarPlayLogBoth(@"NOWPLAYING dealloc");
 }
 
 @end

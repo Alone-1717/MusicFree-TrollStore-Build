@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142667"
+EXPECTED_VERSION = "11142668"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -139,6 +139,11 @@ BINARY_MARKERS = [
     b"CELL cover set threw: %@",
     b"MFLoadCoverIntoCell threw: %@",
     b"NOWPLAYING cover set threw: %@",
+    b"ROOT dealloc",
+    b"TOPLIST dealloc",
+    b"NOWPLAYING dealloc",
+    b"SCENE DELEGATE dealloc",
+    b"ROOT tab IGNORED: bad tag=%ld",
 ]
 
 # 旧版已证伪/致命的标记，产物里绝不能再出现

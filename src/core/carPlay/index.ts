@@ -25,6 +25,40 @@ const NativeBridge = NativeModules.CarPlayBridge;
 export const isCarPlayAvailable = Platform.OS === "ios" && !!NativeBridge;
 
 let emitter: NativeEventEmitter | null = null;
+
+/*
+ * ============ 11142668：曲目缓存 ============
+ *
+ * 问题：playTrack 只在本地歌单里找曲目
+ *   MusicSheet.findMusicItemForCarPlay(sheetId, trackId)
+ *
+ * 但搜索结果、榜单曲目、最近播放的歌都不在任何歌单里，
+ * 所以点击后找不到 -> 无法播放。
+ *
+ * 解法：原生每次上报列表（搜索/榜单/历史）时，把这些曲目
+ * 缓存在这里。playTrack 找不到时从缓存取。
+ */
+const trackCache = new Map<string, any>();
+
+function cacheTracks(list: any[]) {
+    if (!Array.isArray(list)) {
+        return;
+    }
+    for (const x of list) {
+        const id = String(x?.id ?? "");
+        if (id) {
+            trackCache.set(id, x);
+        }
+    }
+    /* 缓存上限，防止无限增长 */
+    if (trackCache.size > 500) {
+        const keys = Array.from(trackCache.keys()).slice(0, 200);
+        for (const k of keys) {
+            trackCache.delete(k);
+        }
+    }
+}
+
 let started = false;
 
 function getEmitter(): NativeEventEmitter | null {
@@ -68,17 +102,52 @@ function pushTracks(sheetId: string) {
 /** 点歌：用 playWithReplacePlayList 播放整张歌单，从选中曲目开始 */
 async function playTrack(trackId: string, sheetId: string) {
     try {
-        const musicItem = MusicSheet.findMusicItemForCarPlay(sheetId, trackId);
+        /*
+         * ============ 11142668：支持播放非歌单曲目 ============
+         *
+         * 之前只在本地歌单找：
+         *   MusicSheet.findMusicItemForCarPlay(sheetId, trackId)
+         *
+         * 但搜索/榜单/最近播放的曲目都不在歌单里 -> 找不到 -> 放不了。
+         *
+         * 现在三级查找：
+         *   1) 有 sheetId 且歌单里有 -> 用歌单曲目（能拿到完整队列）
+         *   2) 缓存的曲目（搜索/榜单/历史点过的）
+         *   3) 都找不到 -> 记错误
+         */
+        let musicItem: any = null;
+        let list: any[] = [];
+
+        /* 1. 优先从歌单找（有队列） */
+        if (sheetId && sheetId.length > 0) {
+            musicItem = MusicSheet.findMusicItemForCarPlay(sheetId, trackId);
+            const sheetList = MusicSheet.getSortedMusicListBySheetId(sheetId)?.musicList ?? [];
+            if (Array.isArray(sheetList) && sheetList.length > 0) {
+                list = [...sheetList];
+            }
+        }
+
+        /* 2. 缓存查找 */
         if (!musicItem) {
-            errorLog("[CarPlay] track not found", { trackId, sheetId });
+            musicItem = trackCache.get(String(trackId)) ?? null;
+        }
+
+        /* 3. 都没有 */
+        if (!musicItem) {
+            errorLog("[CarPlay] track not found anywhere", { trackId, sheetId });
+            trace(`[CarPlay] playTrack FAILED: ${trackId} not in sheet nor cache (cache=${trackCache.size})`);
             return;
         }
-        const list = MusicSheet.getSortedMusicListBySheetId(sheetId)?.musicList ?? [];
+
+        /* 没有队列就单曲播放 */
         if (!list.length) {
-            return;
+            list = [musicItem];
+            trace(`[CarPlay] playTrack: single track (no queue) ${musicItem.title ?? trackId}`);
         }
-        await TrackPlayer.playWithReplacePlayList(musicItem, [...list]);
+
+        await TrackPlayer.playWithReplacePlayList(musicItem, list);
         pushNowPlaying(musicItem);
+        trace(`[CarPlay] playTrack OK: ${musicItem.title ?? trackId} queue=${list.length}`);
     } catch (e) {
         errorLog("[CarPlay] playTrack", e);
     }
@@ -355,6 +424,8 @@ async function fetchTopListDetail(pluginHash: string, listId: string, title: str
             platform: String(x?.platform ?? plugin.name ?? ""),
         }));
 
+        cacheTracks(tracks);
+
         trace(`[CarPlay] topList detail '${title}' -> ${tracks.length} tracks`);
         NativeBridge?.setTopListTracks?.(tracks, listId);
     } catch (e) {
@@ -374,16 +445,69 @@ async function handleSearch(query: string) {
     trace(`[CarPlay] search request: "${query}"`);
     try {
         /*
-         * TODO(构建B)：接插件搜索
-         *   const results = await searchByPlugins(query);
-         * 现在先返回空，验证桥路。
+         * ============ 11142668：真正的联网搜索 ============
+         *
+         * 之前一直是 TODO 空实现（永远返回空数组），
+         * 所以车机上只能搜到本地歌单。
+         *
+         * 现在改成：调用所有支持搜索的插件，合并结果。
+         *
+         * 接口确认（src/core/pluginManager/plugin.ts:173）：
+         *   plugin.methods.search(query, page, type)
+         *   type 为 "music"
+         *   返回 { isEnd, data: IMusicItem[] }
+         *
+         * 限制：
+         *   - 每个插件最多取前 20 条（避免车机上列表过长）
+         *   - 单个插件失败不影响其他
+         *   - 总共最多 60 条
          */
-        const results: any[] = [];
+        const plugins = PluginManager.getSearchablePlugins?.("music") ?? [];
+        trace(`[CarPlay] search across ${plugins.length} plugins`);
 
-        NativeBridge?.setSearchResults?.(results, query);
-        trace(`[CarPlay] search reply: ${results.length} results`);
+        const merged: any[] = [];
+        const MAX_PER_PLUGIN = 20;
+        const MAX_TOTAL = 60;
+
+        for (const plugin of plugins) {
+            if (merged.length >= MAX_TOTAL) {
+                break;
+            }
+            try {
+                const r = await plugin?.methods?.search?.(query, 1, "music");
+                const items = r?.data ?? [];
+                for (const it of items) {
+                    if (merged.length >= MAX_TOTAL) {
+                        break;
+                    }
+                    if (merged.length >= plugins.length * MAX_PER_PLUGIN) {
+                        break;
+                    }
+                    merged.push({
+                        id: String(it?.id ?? ""),
+                        title: String(it?.title ?? ""),
+                        artist: String(it?.artist ?? ""),
+                        album: String(it?.album ?? ""),
+                        artwork: String(it?.artwork ?? ""),
+                        platform: String(it?.platform ?? plugin.name ?? ""),
+                        /* 搜索结果没有歌单归属，用空串 */
+                        sheetId: "",
+                    });
+                }
+            } catch (e) {
+                /* 单插件失败忽略 */
+                trace(`[CarPlay] plugin ${plugin?.name ?? "?"} search failed`);
+            }
+        }
+
+        /* 缓存这些曲目，供点击时播放 */
+        cacheTracks(merged);
+
+        trace(`[CarPlay] search reply: ${merged.length} results for "${query}"`);
+        NativeBridge?.setSearchResults?.(merged, query);
     } catch (e) {
         errorLog("[CarPlay] handleSearch", e);
+        NativeBridge?.setSearchResults?.([], query);
     }
 }
 
