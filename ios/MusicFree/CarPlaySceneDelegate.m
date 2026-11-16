@@ -4177,6 +4177,28 @@ static dispatch_source_t sGCDPollTimer = NULL;
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+
+    /*
+     * ================================================================
+     * 11142704：观察者注册提前到 viewDidLoad 最开头
+     * ================================================================
+     * 依据：日志显示同一份包，旧实例(PID17278)有 observers registered，
+     *      重启后的新实例(PID17327)没有 -> viewDidLoad 在末尾注册前中断。
+     * 修法：提到最前面 + @try/@catch，保证一定注册成功。
+     */
+    @try {
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(handleNowPlayingState:)
+                                                     name:@"MFCarPlayNowPlayingState"
+                                                   object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(handleLyricUpdate:)
+                                                     name:@"MFCarPlayLyric"
+                                                   object:nil];
+        MFCarPlayLogBoth(@"[OBS] registered EARLY, self=%p", self);
+    } @catch (NSException *e) {
+        MFCarPlayLogBoth(@"[OBS] register FAILED: %@ -- %@", e.name, e.reason);
+    }
     MFScaleForSize(self.view.bounds.size);
 
     self.title = @"";
@@ -4326,7 +4348,7 @@ static dispatch_source_t sGCDPollTimer = NULL;
      * 内容区默认显示封面，点击切换成歌词，再点切回封面。
      */
     [NSLayoutConstraint activateConstraints:@[
-        [self.coverView.topAnchor constraintEqualToAnchor:self.artistLabel.bottomAnchor constant:MFL(@"coverGap", 14)],
+        [self.coverView.topAnchor constraintEqualToAnchor:self.artistLabel.bottomAnchor constant:MFL(@"coverGap", 28)],
         [self.coverView.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
         [self.coverView.widthAnchor constraintEqualToConstant:MFL(@"coverSize", 185)],
         [self.coverView.heightAnchor constraintEqualToConstant:MFL(@"coverSize", 185)],
@@ -4562,9 +4584,11 @@ static dispatch_source_t sGCDPollTimer = NULL;
      *
      * 修法：放到 viewDidLoad 最末尾，所有视图都加完之后再添加。
      */
+    MFCarPlayLogBoth(@"[VDL] MFAddBackButton");
     MFAddBackButton(self);
 
     /* 11142669：启动原生进度轮询（1 秒，JS 不推时的兜底） */
+    MFCarPlayLogBoth(@"[VDL] startProgressPoll");
     [self startProgressPoll];
 
     /* 11142677：进度条支持点击跳转（Apple Music 行为） */
@@ -4574,21 +4598,18 @@ static dispatch_source_t sGCDPollTimer = NULL;
             [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(onProgressTap:)];
         [self.progressView addGestureRecognizer:progressTap];
     }
+MFCarPlayLogBoth(@"[VDL] progressTap done");
 
     /*
      * 11142655：监听 JS 回传的播放状态。
      * 这一版只把状态记到日志 + 更新按钮文字，完整实时刷新在构建 B。
      */
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(handleNowPlayingState:)
-                                                 name:@"MFCarPlayNowPlayingState"
-                                               object:nil];
+    MFCarPlayLogBoth(@"[VDL] before addObserver state");
+    /* 11142704: 已移到 viewDidLoad 开头注册 */
 
     /* 11142657：歌词推送监听 */
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(handleLyricUpdate:)
-                                                 name:@"MFCarPlayLyric"
-                                               object:nil];
+    MFCarPlayLogBoth(@"[VDL] before addObserver lyric");
+    /* 11142704: 已移到 viewDidLoad 开头注册 */
 
     /* 11142672：确认观察者注册成功（诊断「收不到通知」问题） */
     MFCarPlayLogBoth(@"NOWPLAYING observers registered: state+lyric, self=%p", self);
@@ -4632,6 +4653,28 @@ static dispatch_source_t sGCDPollTimer = NULL;
 
     /* 统一走 applyStateToUI */
     [self applyStateToUI:state];
+
+    /*
+     * ================================================================
+     * 11142704：恢复歌词同步（参照历史版本 f11126bc）
+     * ================================================================
+     * applyStateToUI 未执行时 currentProgress 不更新 -> 歌词不同步。
+     * 历史 f11126bc 里 handler 自己赋值，60c7ec21 重构后丢了。
+     */
+    NSNumber *progNum = [state[@"progress"] isKindOfClass:[NSNumber class]]
+        ? state[@"progress"] : nil;
+    if (progNum) {
+        double curProg = progNum.doubleValue;
+        if (curProg >= 0 && curProg < 100000) {
+            self.currentProgress = curProg;
+            static NSInteger sSyncDbg = 0;
+            sSyncDbg++;
+            if (sSyncDbg % 10 == 1) {
+                MFCarPlayLogBoth(@"[SYNC] currentProgress=%.2f lines=%lu",
+                      curProg, (unsigned long)self.lyricLines.count);
+            }
+        }
+    }
     [self refreshLyricHighlight];
 }
 
@@ -5004,9 +5047,24 @@ static dispatch_source_t sGCDPollTimer = NULL;
 - (void)pollStateStep {
     MFCarPlayBridge *bridge = [MFCarPlayBridge shared];
     if (!bridge) {
+        MFCarPlayLogBoth(@"[POLL] stateStep: bridge is NIL");
         return;
     }
     NSDictionary *st = [bridge nowPlayingState];
+    /*
+     * 11142704：诊断 currentProgress 为何不更新
+     * 推测：桥缓存为空 -> applyStateToUI 从未执行 -> 歌词不同步
+     */
+    static NSInteger sPollDbg = 0;
+    sPollDbg++;
+    if (sPollDbg % 10 == 1) {
+        MFCarPlayLogBoth(@"[POLL] stateStep #%ld bridge=%p count=%lu hasPos=%@",
+              (long)sPollDbg,
+              (__bridge void *)bridge,
+              (unsigned long)([st isKindOfClass:[NSDictionary class]] ? st.count : 0),
+              [st isKindOfClass:[NSDictionary class]]
+                  ? (st[@"progress"] ?: @"nil") : @"notdict");
+    }
     if (![st isKindOfClass:[NSDictionary class]] || st.count == 0) {
         return;
     }
@@ -5396,7 +5454,8 @@ static dispatch_source_t sGCDPollTimer = NULL;
          */
         /* 11142697：歌词表与封面完全重合（历史版 8232abf3 的正确做法） */
         [tb.topAnchor constraintEqualToAnchor:self.coverView.topAnchor],
-        [tb.bottomAnchor constraintEqualToAnchor:self.coverView.bottomAnchor],
+        /* 11142704：歌词区下沿延伸到按钮上方，配合 coverGap=28 实现垂直居中 */
+        [tb.bottomAnchor constraintEqualToAnchor:self.repeatButton.topAnchor constant:-MFL(@"lyricBottomGap", 10)],
         [tb.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:MFL(@"lyricSide", 40)],
         [tb.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-MFL(@"lyricSide", 40)],
     ]];
@@ -5468,15 +5527,35 @@ static dispatch_source_t sGCDPollTimer = NULL;
             ? line[@"translation"] : @"";
 
         BOOL isCurrent = (indexPath.row == self.currentLyricIndex);
+
+        /*
+         * 11142704：歌词水平居中
+         * 系统 textLabel 会重置 textAlignment 且带内边距 -> 文字贴左
+         * 改用 contentView 上的自定义 label，全宽居中
+         */
+        UILabel *mfLyric = [cell.contentView viewWithTag:8801];
+        if (!mfLyric) {
+            mfLyric = [[UILabel alloc] init];
+            mfLyric.tag = 8801;
+            mfLyric.textAlignment = NSTextAlignmentCenter;
+            mfLyric.backgroundColor = [UIColor clearColor];
+            mfLyric.numberOfLines = 0;
+            mfLyric.lineBreakMode = NSLineBreakByWordWrapping;
+            [cell.contentView addSubview:mfLyric];
+        }
+        cell.textLabel.hidden = YES;
+        cell.textLabel.text = @"";
+        [cell.textLabel setNeedsLayout];
         cell.textLabel.text = lrc;
         /*
          * 11142678：字体改 MFFont，随屏幕缩放。
          * 原来硬编码 22/18，小屏会溢出、大屏偏小。
          * 当前行比其它行大 3pt，突出高亮。
          */
-        cell.textLabel.font = isCurrent ? MFFont(19.0) : MFFont(16.0);
-        cell.textLabel.textColor = isCurrent
-            ? MFCarPlayAccentColor()                       /* 当前行：浅蓝高亮 */
+        mfLyric.text = lrc;
+        mfLyric.font = isCurrent ? MFFont(19.0) : MFFont(16.0);
+        mfLyric.textColor = isCurrent
+            ? MFCarPlayAccentColor()
             : [UIColor colorWithRed:0.75 green:0.75 blue:0.78 alpha:1.0];
         cell.detailTextLabel.text = tr;
         cell.detailTextLabel.textColor = [UIColor colorWithRed:0.6 green:0.6 blue:0.63 alpha:1.0];
@@ -5592,6 +5671,48 @@ static dispatch_source_t sGCDPollTimer = NULL;
     }
     cell.textLabel.textAlignment = NSTextAlignmentCenter;
     cell.detailTextLabel.textAlignment = NSTextAlignmentCenter;
+
+    /*
+     * 11142704：水平居中诊断
+     * UITableViewCell 的 textLabel 有系统内边距，
+     * frame 设为 (0,0,w,h) 时文本仍可能在内容区内缩进。
+     */
+    static NSInteger sHCnt = 0;
+    sHCnt++;
+    if (sHCnt <= 5) {
+        MFCarPlayLogBoth(@"[HCENTER] cell=%@ cellW=%.1f textFrame=%@ align=%ld",
+              NSStringFromClass([cell class]),
+              cell.bounds.size.width,
+              NSStringFromCGRect(cell.textLabel.frame),
+              (long)cell.textLabel.textAlignment);
+        MFCarPlayLogBoth(@"[HCENTER] tableView width=%.1f", w);
+        MFCarPlayLogBoth(@"[HCENTER] textLabel superview frame=%@",
+              NSStringFromCGRect(cell.textLabel.superview.frame));
+    }
+
+    /* 11142704：自定义歌词 label 全宽居中 */
+    UILabel *mfLyric = [cell.contentView viewWithTag:8801];
+    if (mfLyric) {
+        BOOL hasTrans = (trText && trText.length > 0);
+        if (hasTrans) {
+            mfLyric.frame = CGRectMake(0, 0, w, h * 0.62);
+            cell.detailTextLabel.frame = CGRectMake(0, h * 0.60, w, h * 0.38);
+        } else {
+            mfLyric.frame = CGRectMake(0, 0, w, h);
+            cell.detailTextLabel.frame = CGRectZero;
+        }
+        mfLyric.textAlignment = NSTextAlignmentCenter;
+    
+        static NSInteger sHCnt2 = 0;
+        sHCnt2++;
+        if (sHCnt2 <= 5) {
+            NSString *tx = mfLyric.text ?: @"";
+            if (tx.length > 12) { tx = [tx substringToIndex:12]; }
+            MFCarPlayLogBoth(@"[HCENTER] tblW=%.1f lyricFrame=%@ align=%ld text=%@",
+                  w, NSStringFromCGRect(mfLyric.frame),
+                  (long)mfLyric.textAlignment, tx);
+        }
+    }
 }
 
 - (void)refreshLyricHighlight {

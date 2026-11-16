@@ -63,11 +63,11 @@
     NSString *hotPath = [docDir stringByAppendingPathComponent:@"main.jsbundle"];
     if ([[NSFileManager defaultManager] fileExistsAtPath:hotPath]) {
       NSURL *hotURL = [NSURL fileURLWithPath:hotPath];
-      NSLog(@"[HOT] loading JS from Documents: %@", hotPath);
+      MFCarPlayLogBoth(@"[HOT] loading JS from Documents: %@", hotPath);
       return hotURL;
     }
   }
-  NSLog(@"[HOT] loading JS from bundle (no hot update)");
+  MFCarPlayLogBoth(@"[HOT] loading JS from bundle (no hot update)");
   return [[NSBundle mainBundle] URLForResource:@"main" withExtension:@"jsbundle"];
 #endif
 }

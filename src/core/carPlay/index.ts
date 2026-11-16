@@ -52,8 +52,13 @@ async function mfGetPlaybackStateAsync(): Promise<number> {
     try {
         const st: any = await (ReactNativeTrackPlayer as any).getPlaybackState?.();
         const v = st?.state;
+        /* 11142703：打印原始值，确认 track-player 到底返回什么 */
+        try {
+            (globalThis as any).__mfLastRawState = v;
+            (globalThis as any).__mfLastRawStateFull = st;
+        } catch (e) { /* ignore */ }
         if (v === undefined) return 0;
-        return (v === State.Playing || v === 3) ? 1 : 0;
+        return (v === State.Playing || v === 3 || v === "playing") ? 1 : 0;
     } catch (e) {
         return 0;
     }
@@ -730,7 +735,6 @@ function isCurrentFavorite(music: any): boolean {
 }
 
 async function pushNowPlayingState() {
-    logToNative(`[STATE] -> native title=${music?.title ?? "-"} pos=${progress.toFixed(2)}/${duration.toFixed(2)} playing=${isPlaying}`);
     if (!NativeBridge?.setNowPlayingState) {
         return;
     }
@@ -749,6 +753,7 @@ async function pushNowPlayingState() {
             const p = await TrackPlayer.getProgress();
             progress = p?.position ?? 0;
             duration = p?.duration ?? duration;
+            logToNative(`[STATE] rawProgress=${JSON.stringify(p)}`);
         } catch (e) {
             /* 没在播放时会抛，忽略 */
         }
@@ -771,6 +776,7 @@ async function pushNowPlayingState() {
             }
         } catch (e) { /* 忽略 */ }
 
+        logToNative(`[STATE] -> native title=${music?.title ?? "-"} pos=${progress.toFixed(2)}/${duration.toFixed(2)} playing=${isPlaying}`);
         NativeBridge.setNowPlayingState({
             title: music?.title ?? "",
             artist: music?.artist ?? "",
@@ -961,7 +967,9 @@ export function setupCarPlay() {
             }
 
             /* 签名：曲目 + 秒数 + 播放态 */
-            logToNative(`[STATE] tick key=${key} pos=${progress.toFixed(2)} playing=${isPlaying}`);
+            logToNative(`[STATE] tick key=${key} pos=${progress.toFixed(2)} playing=${isPlaying}`
+                + ` | rawState=${String((globalThis as any).__mfLastRawState ?? "?")}`
+                + ` | stType=${typeof (globalThis as any).__mfLastRawState}`);
             const sig = `${key}|${progress}|${isPlaying}`;
             if (sig === lastStateSig) {
                 return;
