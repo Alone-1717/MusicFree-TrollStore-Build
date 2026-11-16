@@ -13,6 +13,7 @@
 //
 #import "CarPlayBridge.h"
 #import <React/RCTLog.h>
+#import "MFCarPlayLog.h"
 
 static NSString *const kMFCarPlayEventNotification = @"MFCarPlayEventNotification";
 static NSString *const kMFCarPlayDataDidUpdate = @"MFCarPlayDataDidUpdate";
@@ -98,7 +99,7 @@ static MFCarPlayBridge *sharedInstance = nil;
                                                  selector:@selector(handleCarPlayEvent:)
                                                      name:kMFCarPlayEventNotification
                                                    object:nil];
-        NSLog(@"[MusicFree][CarPlay] bridge init, pending=%lu",
+        MFCarPlayLogBoth(@"BRIDGE init, pending=%lu",
               (unsigned long)sPendingEvents.count);
     }
     return self;
@@ -130,7 +131,7 @@ RCT_EXPORT_MODULE(CarPlayBridge);
         if (!self) {
             return;
         }
-        NSLog(@"[MusicFree][CarPlay] bridge startObserving, flush pending=%lu",
+        MFCarPlayLogBoth(@"BRIDGE startObserving, flush pending=%lu",
               (unsigned long)sPendingEvents.count);
         [self flushPendingEvents];
     });
@@ -153,7 +154,7 @@ RCT_EXPORT_METHOD(carPlayJSReady)
         [[NSNotificationCenter defaultCenter] postNotificationName:kMFCarPlayJSReady
                                                             object:nil
                                                           userInfo:nil];
-        NSLog(@"[MusicFree][CarPlay] JS READY (sJSReady=1)");
+        MFCarPlayLogBoth(@"BRIDGE JS READY (sJSReady=1) -- JS runtime is up");
     });
 }
 
@@ -199,7 +200,7 @@ RCT_EXPORT_METHOD(setSearchResults:(NSArray *)results query:(NSString *)query)
     self.searchResultsData = [results isKindOfClass:[NSArray class]] ? results : @[];
     self.lastSearchQuery = query;
 
-    NSLog(@"[MusicFree][CarPlay] BRIDGE got %lu search results for '%@'",
+    MFCarPlayLogBoth(@"BRIDGE got %lu search results for '%@'",
           (unsigned long)self.searchResultsData.count, query);
 
     [[NSNotificationCenter defaultCenter] postNotificationName:kMFCarPlaySearchResults
@@ -279,7 +280,7 @@ RCT_EXPORT_METHOD(setLyric:(NSArray *)lines)
 
     self.lyricLines = sorted;
 
-    NSLog(@"[MusicFree][CarPlay] BRIDGE got %lu lyric lines", (unsigned long)sorted.count);
+    MFCarPlayLogBoth(@"BRIDGE got %lu lyric lines", (unsigned long)sorted.count);
 
     [[NSNotificationCenter defaultCenter] postNotificationName:kMFCarPlayLyric
                                                         object:nil
@@ -301,7 +302,7 @@ RCT_EXPORT_METHOD(setLyric:(NSArray *)lines)
 RCT_EXPORT_METHOD(setTopLists:(NSArray *)lists)
 {
     self.topListsData = [lists isKindOfClass:[NSArray class]] ? lists : @[];
-    NSLog(@"[MusicFree][CarPlay] BRIDGE got %lu top lists",
+    MFCarPlayLogBoth(@"BRIDGE got %lu top lists",
           (unsigned long)self.topListsData.count);
 
     [[NSNotificationCenter defaultCenter] postNotificationName:kMFCarPlayTopLists
@@ -319,7 +320,7 @@ RCT_EXPORT_METHOD(setTopListTracks:(NSArray *)tracks listId:(NSString *)listId)
     self.topListTracksData = [tracks isKindOfClass:[NSArray class]] ? tracks : @[];
     self.topListTracksId = [listId isKindOfClass:[NSString class]] ? listId : @"";
 
-    NSLog(@"[MusicFree][CarPlay] BRIDGE got %lu tracks for top list '%@'",
+    MFCarPlayLogBoth(@"BRIDGE got %lu tracks for top list '%@'",
           (unsigned long)self.topListTracksData.count, self.topListTracksId);
 
     [[NSNotificationCenter defaultCenter] postNotificationName:kMFCarPlayTopListTracks

@@ -1,8 +1,19 @@
 #import "AppDelegate.h"
 #import "CarPlaySceneDelegate.h"
+#import "MFCarPlayLog.h"
 
 #import <CarPlay/CarPlay.h>
 #import <React/RCTBundleURLProvider.h>
+
+/*
+ * 11142665：类扩展 —— 隐藏的 RN window。
+ *
+ * 用来挂载 RN 的 rootView，让 bridge 真正启动（加载 jsbundle、执行 JS）。
+ * 这个 window alpha=0、不接收触摸，完全不影响 CarPlay 原生界面。
+ */
+@interface AppDelegate ()
+@property (nonatomic, strong) UIWindow *mfHiddenRNWindow;
+@end
 
 @implementation AppDelegate
 
@@ -165,36 +176,81 @@
 - (BOOL)mfEnsureReactNativeStarted
 {
   /*
-   * 读取 self.bridge 会触发 RCTAppDelegate 的懒加载：
-   *   创建 RCTBridge -> 加载 main.jsbundle -> 执行 JS -> bootstrap.ts 跑 setupCarPlay()
-   * 这才是 CarPlay JS 桥能注册监听的前提。
+   * ============ 11142665：正确的 RN 启动方式 ============
    *
-   * 注意：
-   *   - bridge 已存在时 getter 直接返回，不会重复创建（幂等）
-   *   - 必须在主线程调用（RCTAppDelegate 要求）
-   *   - 初始化耗时 2-5 秒，是异步的；这里只负责"启动"，不等完成
+   * 之前失败的原因（查 RCTAppDelegate.mm 后确认）：
+   *   - (RCTBridge *)bridge { return self.rootViewFactory.bridge; }
+   * 这个 getter 只是读属性，不会创建 bridge。
+   * 所以 self.bridge 永远返回 nil，JS 永远不执行。
+   *
+   * 正确做法：调 rootViewFactory 的 viewWithModuleName:
+   * 它内部才会 new RCTBridge 并加载 main.jsbundle。
    */
   if (![NSThread isMainThread]) {
-    __block BOOL result = NO;
+    __block BOOL r = NO;
     dispatch_sync(dispatch_get_main_queue(), ^{
-      result = [self mfEnsureReactNativeStarted];
+      r = [self mfEnsureReactNativeStarted];
     });
-    return result;
+    return r;
   }
 
-  @try {
-    id bridge = nil;
-    if ([self respondsToSelector:@selector(bridge)]) {
-      bridge = [self performSelector:@selector(bridge)];
-    }
-    BOOL ready = (bridge != nil);
-    NSLog(@"[MusicFree][CarPlay] mfEnsureReactNativeStarted -> bridge=%@",
-          ready ? @"created/existing" : @"nil");
-    return ready;
-  } @catch (NSException *e) {
-    NSLog(@"[MusicFree][CarPlay] mfEnsureReactNativeStarted threw: %@", e.reason);
+  /* 1. rootViewFactory 必须已存在（didFinishLaunching 里建的） */
+  if (!self.rootViewFactory) {
+    MFCarPlayLogBoth(@"RN start SKIP: rootViewFactory is nil "
+          @"(didFinishLaunching not run?)");
     return NO;
   }
+
+  /* 2. 已启动过就不重复 */
+  if (self.rootViewFactory.bridge) {
+    MFCarPlayLogBoth(@"RN start: bridge already exists, skip");
+    return YES;
+  }
+
+  /* 3. 真正触发 JS 加载 */
+  @try {
+    UIView *rootView = [self.rootViewFactory viewWithModuleName:self.moduleName
+                                                initialProperties:self.initialProps
+                                                    launchOptions:nil];
+    if (!rootView) {
+      MFCarPlayLogBoth(@"RN start FAILED: rootView is nil");
+      return NO;
+    }
+
+    /*
+     * 4. 挂到隐藏 window 上。
+     *
+     * 为什么需要：
+     *   RN 的 rootView 需要被 attach 到 window 才会真正 layout、
+     *   触发 bridge 的 start（bundle 加载）。
+     *
+     * 用隐藏 window（alpha 0、userInteractionEnabled NO）：
+     *   不干扰 CarPlay 原生界面，但能让 RN 正常跑起来。
+     */
+    if (!self.mfHiddenRNWindow) {
+      UIWindow *w = [[UIWindow alloc] initWithFrame:CGRectMake(0, 0, 1, 1)];
+      w.alpha = 0.0;
+      w.userInteractionEnabled = NO;
+      UIViewController *vc = [[UIViewController alloc] init];
+      vc.view = rootView;
+      w.rootViewController = vc;
+      w.hidden = NO;          /* 必须 NO，否则不 layout */
+      self.mfHiddenRNWindow = w;
+    }
+
+    MFCarPlayLogBoth(@"RN start OK: bridge=%@ rootView=%@",
+          self.rootViewFactory.bridge ? @"yes" : @"nil", rootView);
+
+    return self.rootViewFactory.bridge != nil;
+  } @catch (NSException *e) {
+    MFCarPlayLogBoth(@"RN start threw: %@ -- %@", e.name, e.reason);
+    return NO;
+  }
+}
+
+- (NSDictionary *)initialProps
+{
+  return @{};
 }
 
 @end

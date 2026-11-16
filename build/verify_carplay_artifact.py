@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142663"
+EXPECTED_VERSION = "11142665"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -118,7 +118,6 @@ BINARY_MARKERS = [
     b"NOWPLAYING toggle lyric mode -> %d",
     b"NOWPLAYING lyric table built: %lu lines",
     b"NOWPLAYING lyric updated: %lu lines",
-    b"SEARCH kb: win=%@ isKey=%d fieldAlpha=%.1f interaction=%d",
     b"SEARCH kb: using built-in keyboard (system kb blocked by CarPlay)",
     b"NOWPLAYING state: playing=%@ pos=%.0f/%.0f",
     b"NOWPLAYING tap FAVORITE",
@@ -129,6 +128,13 @@ BINARY_MARKERS = [
     b"TOPLIST VC: title=%@ listId=%@ plugin=%@",
     b"TOPLIST VC: loaded %lu tracks for '%@'",
     b"TOPLIST tap row=%ld track=%@",
+    b"RELOAD(%@) threw: %@ -- %@",
+    b"LYRIC reloadRows threw: %@",
+    b"LYRIC scrollTo threw: %@",
+    b"BRIDGE JS READY (sJSReady=1) -- JS runtime is up",
+    b"RN start OK: bridge=%@ rootView=%@",
+    b"RN start SKIP: rootViewFactory is nil",
+    b"BRIDGE got %lu top lists",
 ]
 
 # 旧版已证伪/致命的标记，产物里绝不能再出现

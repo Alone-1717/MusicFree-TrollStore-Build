@@ -221,6 +221,31 @@ static void MFLoadCoverIntoCell(NSString *urlStr, UITableViewCell *cell) {
  *   点歌后 JS 处理有延迟，MMKV 还没更新，读它会拿到上一首。
  *   点歌这一刻我们手里有这首歌的完整数据，直接用它。
  */
+/*
+ * ============ 11142664：reloadData 安全包装 ============
+ *
+ * 日志证据：切到榜单 tab 后立刻闪退，且之后无任何日志。
+ * 说明崩在 UITableView 内部（数据源与视图状态不一致）。
+ *
+ * 这里给所有 reloadData 包一层异常捕获，
+ * 任何异常都记录到日志而不是直接崩掉整个 App。
+ *
+ * 这样做的好处：
+ *   1) 即使某个分支有 bug，也只是这个页面显示异常，App 不闪退
+ *   2) 日志里能看到具体异常原因，方便定位
+ */
+static void MFSafeReload(UITableView *tv, NSString *tag) {
+    if (!tv) {
+        return;
+    }
+    @try {
+        [tv reloadData];
+    } @catch (NSException *e) {
+        MFCarPlayLogBoth(@"RELOAD(%@) threw: %@ -- %@", tag ?: @"?",
+              e.name, e.reason);
+    }
+}
+
 static NSDictionary *MFNowPlayingFromTrack(NSDictionary *track) {
     if (![track isKindOfClass:[NSDictionary class]]) {
         return nil;
@@ -924,7 +949,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 - (void)doSearch:(NSString *)query {
     if (![query isKindOfClass:[NSString class]] || query.length == 0) {
         self.results = @[];
-        [self.table reloadData];
+        MFSafeReload(self.table, @"ROOT");
         return;
     }
 
@@ -941,7 +966,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
     NSArray<NSDictionary *> *local = [self.carPlayDelegate searchForCarPlay:query] ?: @[];
     self.results = local;
-    [self.table reloadData];
+    MFSafeReload(self.table, @"ROOT");
 
     BOOL jsReady = [MFCarPlayBridge isJSReady];
     MFCarPlayLogBoth(@"ROOT search '%@' -> local=%lu jsReady=%d",
@@ -976,7 +1001,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     }
 
     self.results = results;
-    [self.table reloadData];
+    MFSafeReload(self.table, @"ROOT");
     MFCarPlayLogBoth(@"ROOT search: JS returned %lu results for '%@'",
           (unsigned long)results.count, query);
 }
@@ -1035,7 +1060,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     } else {
         self.results = @[];
     }
-    [self.table reloadData];
+    MFSafeReload(self.table, @"ROOT");
 
     MFCarPlayLogBoth(@"ROOT tab -> %ld (0=sheets 1=search 2=toplist 3=history)", (long)tag);
 }
@@ -1112,7 +1137,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     }
     self.topLists = lists;
     if (self.selectedTab == 2) {
-        [self.table reloadData];
+        MFSafeReload(self.table, @"ROOT");
     }
     MFCarPlayLogBoth(@"ROOT topLists updated: %lu", (unsigned long)lists.count);
 }
@@ -1121,7 +1146,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     if (self.selectedTab == 0) {
         self.sheets = [self.carPlayDelegate sheets] ?: @[];
     }
-    [self.table reloadData];
+    MFSafeReload(self.table, @"ROOT");
 }
 
 #pragma mark UITableViewDataSource
@@ -1141,7 +1166,23 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
 - (UITableViewCell *)tableView:(UITableView *)tableView
          cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    /* 11142662：按 tab 选数据源 */
+    /*
+     * ============ 11142664：榜单闪退修复 ============
+     *
+     * 日志证据：切到榜单 tab 后立刻闪退
+     *   02:29:35 ROOT topLists loaded: 0
+     *   02:29:35 ROOT tab -> 2 (0=sheets 1=search 2=toplist 3=history)
+     *   （之后无任何日志）
+     *
+     * 根因：topLists 为空时，cellForRow 走到「空 cell」分支，
+     * 但那个分支返回的是没有 reuseIdentifier 的全新 cell，
+     * 表格在 reload 时会因内部状态不一致抛异常。
+     *
+     * 修法：
+     *   1) 空数据用注册过的 reusable id，避免表格内部混乱
+     *   2) data 为 nil 也当空处理
+     *   3) row < 0 也防护
+     */
     NSArray<NSDictionary *> *data;
     if (self.selectedTab == 1) {
         data = self.results;
@@ -1150,11 +1191,26 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     } else {
         data = self.sheets;
     }
-    if (indexPath.row >= (NSInteger)data.count) {
-        return [[MFCarPlayListCell alloc] initWithStyle:UITableViewCellStyleDefault
-                                       reuseIdentifier:nil];
+    if (![data isKindOfClass:[NSArray class]]) {
+        data = @[];
     }
+
+    /* 越界 / 负数 / 空数据 统一返回一个安全空 cell */
+    if (indexPath.row < 0 || indexPath.row >= (NSInteger)data.count) {
+        static NSString *emptyId = @"mfcell_empty";
+        MFCarPlayListCell *empty = (MFCarPlayListCell *)[tableView dequeueReusableCellWithIdentifier:emptyId];
+        if (!empty) {
+            empty = [[MFCarPlayListCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                             reuseIdentifier:emptyId];
+        }
+        [empty configureWithTitle:@"" subtitle:@"" cover:nil];
+        return empty;
+    }
+
     NSDictionary *item = data[(NSUInteger)indexPath.row];
+    if (![item isKindOfClass:[NSDictionary class]]) {
+        item = @{};
+    }
 
     static NSString *cid = @"mfcell";
     MFCarPlayListCell *cell = (MFCarPlayListCell *)[tableView dequeueReusableCellWithIdentifier:cid];
@@ -3395,7 +3451,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     self.tracks = tracks;
     [self.spinner stopAnimating];
     self.spinner.hidden = YES;
-    [self.table reloadData];
+    MFSafeReload(self.table, @"TOPLIST");
 
     MFCarPlayLogBoth(@"TOPLIST VC: loaded %lu tracks for '%@'",
           (unsigned long)tracks.count, self.listTitle);
@@ -4044,47 +4100,92 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
  * 由 handleNowPlayingState: 调用（JS 每秒推一次 progress）。
  */
 - (void)refreshLyricHighlight {
-    if (!self.showingLyric || !self.lyricTable || self.lyricLines.count == 0) {
+    /*
+     * ============ 11142664：闪退修复 ============
+     *
+     * 日志证据：切换歌词时闪退，三次都停在
+     *   "NOWPLAYING lyric table built: 0 lines"
+     *
+     * 根因：reloadRowsAtIndexPaths / scrollToRowAtIndexPath
+     * 没有做边界检查，lyricLines 为空或长度变化时会抛
+     * NSInternalInconsistencyException（越界）导致闪退。
+     *
+     * 修法：每个索引操作前都校验范围，任何异常状态直接返回。
+     */
+    if (!self.showingLyric || !self.lyricTable) {
         return;
     }
 
+    NSInteger count = (NSInteger)self.lyricLines.count;
+    if (count <= 0) {
+        return;                    /* 没有歌词，什么都不做 */
+    }
+
     double prog = self.currentProgress;
-    NSInteger target = -1;
-    for (NSUInteger k = 0; k < self.lyricLines.count; k++) {
-        NSDictionary *line = self.lyricLines[k];
-        double t = [line[@"time"] isKindOfClass:[NSNumber class]]
+
+    /* 找到当前行（严格限制在 0..count-1） */
+    NSInteger target = 0;
+    for (NSInteger k = 0; k < count; k++) {
+        NSDictionary *line = self.lyricLines[(NSUInteger)k];
+        double tt = [line[@"time"] isKindOfClass:[NSNumber class]]
             ? [line[@"time"] doubleValue] : 0;
-        if (t <= prog) {
-            target = (NSInteger)k;
+        if (tt <= prog) {
+            target = k;
         } else {
             break;
         }
     }
-    if (target < 0) {
-        target = 0;
+
+    /* 三重校验，任何一条不满足都直接退出，绝不越界 */
+    if (target < 0 || target >= count) {
+        return;
     }
     if (target == self.currentLyricIndex) {
+        return;
+    }
+
+    /* 刷新前再确认一次表格行数一致（防止 reloadData 竞态） */
+    NSInteger rowCount = [self.lyricTable numberOfRowsInSection:0];
+    if (rowCount != count) {
+        /* 表格还没同步，只 reloadData 不滚动 */
+        [self.lyricTable reloadData];
+        self.currentLyricIndex = target;
         return;
     }
 
     NSInteger old = self.currentLyricIndex;
     self.currentLyricIndex = target;
 
-    /* 只刷这两行，避免整表重载导致闪烁 */
+    /* 只刷变化的行，且每个索引都校验 */
     NSMutableArray<NSIndexPath *> *paths = [NSMutableArray array];
-    if (old >= 0 && old < (NSInteger)self.lyricLines.count) {
+    if (old >= 0 && old < count) {
         [paths addObject:[NSIndexPath indexPathForRow:old inSection:0]];
     }
-    [paths addObject:[NSIndexPath indexPathForRow:target inSection:0]];
-    [self.lyricTable reloadRowsAtIndexPaths:paths
-                           withRowAnimation:UITableViewRowAnimationNone];
+    if (target >= 0 && target < count) {
+        [paths addObject:[NSIndexPath indexPathForRow:target inSection:0]];
+    }
+    if (paths.count > 0) {
+        @try {
+            [self.lyricTable reloadRowsAtIndexPaths:paths
+                                   withRowAnimation:UITableViewRowAnimationNone];
+        } @catch (NSException *e) {
+            MFCarPlayLogBoth(@"LYRIC reloadRows threw: %@", e.reason);
+            [self.lyricTable reloadData];
+        }
+    }
 
-    /* 滚动到当前行（放在中间偏上，留出上下文） */
-    NSIndexPath *cur = [NSIndexPath indexPathForRow:target inSection:0];
-    [self.lyricTable scrollToRowAtIndexPath:cur
-                           atScrollPosition:UITableViewScrollPositionMiddle
-                                   animated:YES];
+    /* 滚动同样加保护 */
+    if (target >= 0 && target < count) {
+        @try {
+            [self.lyricTable scrollToRowAtIndexPath:[NSIndexPath indexPathForRow:target inSection:0]
+                                   atScrollPosition:UITableViewScrollPositionMiddle
+                                           animated:YES];
+        } @catch (NSException *e) {
+            MFCarPlayLogBoth(@"LYRIC scrollTo threw: %@", e.reason);
+        }
+    }
 }
+
 
 /* 收到歌词推送时刷新 */
 - (void)handleLyricUpdate:(NSNotification *)note {
