@@ -403,17 +403,14 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
                 [k.widthAnchor constraintEqualToConstant:88],
             ]];
             if (prevKey) {
-                [NSLayoutConstraint activateConstraint:
-                    [k.leadingAnchor constraintEqualToAnchor:prevKey.trailingAnchor constant:8]];
+                [NSLayoutConstraint activateConstraints:@[[k.leadingAnchor constraintEqualToAnchor:prevKey.trailingAnchor constant:8]]];
             } else {
-                [NSLayoutConstraint activateConstraint:
-                    [k.leadingAnchor constraintEqualToAnchor:row.leadingAnchor]];
+                [NSLayoutConstraint activateConstraints:@[[k.leadingAnchor constraintEqualToAnchor:row.leadingAnchor]]];
             }
             prevKey = k;
         }
         if (prevKey) {
-            [NSLayoutConstraint activateConstraint:
-                [prevKey.trailingAnchor constraintLessThanOrEqualToAnchor:row.trailingAnchor]];
+            [NSLayoutConstraint activateConstraints:@[[prevKey.trailingAnchor constraintLessThanOrEqualToAnchor:row.trailingAnchor]]];
         }
 
         [NSLayoutConstraint activateConstraints:@[
@@ -422,11 +419,9 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
             [row.heightAnchor constraintEqualToConstant:46],
         ]];
         if (prevRow) {
-            [NSLayoutConstraint activateConstraint:
-                [row.topAnchor constraintEqualToAnchor:prevRow.bottomAnchor constant:8]];
+            [NSLayoutConstraint activateConstraints:@[[row.topAnchor constraintEqualToAnchor:prevRow.bottomAnchor constant:8]]];
         } else {
-            [NSLayoutConstraint activateConstraint:
-                [row.topAnchor constraintEqualToAnchor:self.topAnchor constant:8]];
+            [NSLayoutConstraint activateConstraints:@[[row.topAnchor constraintEqualToAnchor:self.topAnchor constant:8]]];
         }
         prevRow = row;
     }
