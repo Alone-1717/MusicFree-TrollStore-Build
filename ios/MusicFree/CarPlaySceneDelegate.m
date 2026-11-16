@@ -676,6 +676,8 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 @property (nonatomic, copy) NSString *currentQuery;
 /* 11142658：自绘软键盘（CarPlay 不让弹系统键盘） */
 @property (nonatomic, strong) MFCarPlayKeyboardView *keyboardView;
+/* 11142662：榜单数据 */
+@property (nonatomic, strong) NSArray<NSDictionary *> *topLists;
 
 - (void)reloadSheets;
 @end
@@ -694,6 +696,17 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
 /* 搜索页（三模块之一）：UITextField + 结果表 */
 
+
+/* 11142662：榜单曲目页（等 JS 回传） */
+@interface MFCarPlayWindowTopListVC : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@property (nonatomic, weak) MFCarPlaySceneDelegate *carPlayDelegate;
+@property (nonatomic, copy) NSString *listId;
+@property (nonatomic, copy) NSString *listTitle;
+@property (nonatomic, copy) NSString *pluginHash;
+@property (nonatomic, strong) UITableView *table;
+@property (nonatomic, strong) NSArray<NSDictionary *> *tracks;
+@property (nonatomic, strong) UIActivityIndicatorView *spinner;
+@end
 
 /* 11142650：播放页（静态版）—— 点歌后跳到这里 */
 @interface MFCarPlayWindowNowPlayingVC : UIViewController <UITableViewDataSource, UITableViewDelegate>
@@ -716,6 +729,11 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 @property (nonatomic, assign) NSInteger currentLyricIndex;  /* 当前高亮行 */
 @property (nonatomic, assign) BOOL showingLyric;            /* 是否在歌词模式 */
 @property (nonatomic, assign) double currentProgress;       /* 当前播放秒数（JS 推送） */
+
+/* ============ 11142661：爱心 / 循环 / 音质 ============ */
+@property (nonatomic, strong) UIButton *favoriteButton;
+@property (nonatomic, strong) UIButton *repeatButton;
+@property (nonatomic, strong) UIButton *qualityButton;
 @end
 
 
@@ -751,7 +769,11 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     self.tabBar.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.tabBar];
 
-    NSArray<NSString *> *titles = @[@"歌曲列表", @"搜索", @"最近播放"];
+    /*
+     * 11142662：四个 tab（用户指定顺序）
+     *   0 歌曲列表  1 搜索  2 榜单  3 最近播放
+     */
+    NSArray<NSString *> *titles = @[@"歌曲列表", @"搜索", @"榜单", @"最近播放"];
     NSMutableArray<UIButton *> *btns = [NSMutableArray array];
     for (NSUInteger i = 0; i < titles.count; i++) {
         UIButton *b = [UIButton buttonWithType:0];
@@ -875,6 +897,12 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
                                                  name:@"MFCarPlaySearchResults"
                                                object:nil];
 
+    /* 11142662：榜单推送监听 */
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleTopLists:)
+                                                 name:@"MFCarPlayTopLists"
+                                               object:nil];
+
     MFCarPlayLogBoth(@"ROOT ready: 3 tabs + JS bridge listeners, selected=0");
 }
 
@@ -994,17 +1022,27 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         }
     }
 
-    /* 切 tab 时重载数据 */
+    /*
+     * 11142662：四 tab 数据切换
+     *   0 歌曲列表 -> self.sheets（歌单）
+     *   1 搜索     -> self.results
+     *   2 榜单     -> self.topLists（JS 推送）
+     *   3 最近播放 -> self.sheets（历史曲目）
+     */
     if (tag == 0) {
         self.sheets = [self.carPlayDelegate sheets] ?: @[];
     } else if (tag == 2) {
+        /* 榜单：先读缓存，同时请求 JS 刷新 */
+        [self reloadTopLists];
+        [MFCarPlayBridge emitControl:@"requestTopLists"];
+    } else if (tag == 3) {
         self.sheets = [self.carPlayDelegate historyForCarPlay] ?: @[];
     } else {
         self.results = @[];
     }
     [self.table reloadData];
 
-    MFCarPlayLogBoth(@"ROOT tab -> %ld (0=sheets 1=search 2=history)", (long)tag);
+    MFCarPlayLogBoth(@"ROOT tab -> %ld (0=sheets 1=search 2=toplist 3=history)", (long)tag);
 }
 
 /*
@@ -1064,6 +1102,26 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     MFCarPlayLogBoth(@"SEARCH kb: using built-in keyboard (system kb blocked by CarPlay)");
 }
 
+/* 11142662：刷新榜单列表（读原生桥缓存） */
+- (void)reloadTopLists {
+    NSArray *lists = [[MFCarPlayBridge shared] topLists];
+    self.topLists = [lists isKindOfClass:[NSArray class]] ? lists : @[];
+    MFCarPlayLogBoth(@"ROOT topLists loaded: %lu", (unsigned long)self.topLists.count);
+}
+
+/* 11142662：JS 推送榜单列表 */
+- (void)handleTopLists:(NSNotification *)note {
+    NSArray *lists = note.userInfo[@"lists"];
+    if (![lists isKindOfClass:[NSArray class]]) {
+        return;
+    }
+    self.topLists = lists;
+    if (self.selectedTab == 2) {
+        [self.table reloadData];
+    }
+    MFCarPlayLogBoth(@"ROOT topLists updated: %lu", (unsigned long)lists.count);
+}
+
 - (void)reloadSheets {
     if (self.selectedTab == 0) {
         self.sheets = [self.carPlayDelegate sheets] ?: @[];
@@ -1077,12 +1135,26 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     if (self.selectedTab == 1) {
         return (NSInteger)self.results.count;
     }
-    return (NSInteger)self.sheets.count;
+    if (self.selectedTab == 2) {
+        return (NSInteger)self.topLists.count;   /* 11142662：榜单 */
+    }
+    if (self.selectedTab == 3) {
+        return (NSInteger)self.sheets.count;     /* 最近播放 */
+    }
+    return (NSInteger)self.sheets.count;         /* 歌单 */
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView
          cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    NSArray<NSDictionary *> *data = (self.selectedTab == 1) ? self.results : self.sheets;
+    /* 11142662：按 tab 选数据源 */
+    NSArray<NSDictionary *> *data;
+    if (self.selectedTab == 1) {
+        data = self.results;
+    } else if (self.selectedTab == 2) {
+        data = self.topLists;
+    } else {
+        data = self.sheets;
+    }
     if (indexPath.row >= (NSInteger)data.count) {
         return [[MFCarPlayListCell alloc] initWithStyle:UITableViewCellStyleDefault
                                        reuseIdentifier:nil];
@@ -1104,6 +1176,17 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         id cnt = item[@"count"];
         sub = [cnt isKindOfClass:[NSNumber class]]
             ? [NSString stringWithFormat:@"%@ 首", cnt] : @"";
+    } else if (self.selectedTab == 2) {
+        /* 11142662：榜单：副标题 = 插件名（平铺后需要区分来源） */
+        NSString *pn = [item[@"pluginName"] isKindOfClass:[NSString class]]
+            ? item[@"pluginName"] : @"";
+        NSString *desc = [item[@"description"] isKindOfClass:[NSString class]]
+            ? item[@"description"] : @"";
+        if (pn.length > 0 && desc.length > 0) {
+            sub = [NSString stringWithFormat:@"%@  ·  %@", pn, desc];
+        } else {
+            sub = pn.length > 0 ? pn : desc;
+        }
     } else {
         /* 搜索/最近播放：副标题 = 歌手 · 专辑 */
         NSString *ar = [item[@"artist"] isKindOfClass:[NSString class]] ? item[@"artist"] : @"";
@@ -1117,7 +1200,8 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
     /* 封面：歌单用 coverImg，其余用 artwork */
     NSString *cover = nil;
-    if (self.selectedTab == 0) {
+    if (self.selectedTab == 0 || self.selectedTab == 2) {
+        /* 歌单 + 榜单都有 coverImg */
         cover = [item[@"coverImg"] isKindOfClass:[NSString class]] ? item[@"coverImg"] : nil;
     }
     if (cover.length == 0) {
@@ -1150,7 +1234,33 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         return;
     }
 
+    /* 11142662：榜单 tab（2）-> 请求 JS 拉详情 */
     if (self.selectedTab == 2) {
+        if (indexPath.row >= (NSInteger)self.topLists.count) {
+            return;
+        }
+        NSDictionary *tl = self.topLists[(NSUInteger)indexPath.row];
+        NSString *ph = tl[@"pluginHash"] ?: @"";
+        NSString *lid = tl[@"id"] ?: @"";
+        NSString *ttl = tl[@"title"] ?: @"";
+
+        MFCarPlayLogBoth(@"ROOT toplist tap row=%ld title=%@ plugin=%@",
+              (long)indexPath.row, ttl, ph);
+
+        /* 立刻给个反馈：进曲目页（先空列表，JS 回来再填） */
+        MFCarPlayWindowTopListVC *vc = [[MFCarPlayWindowTopListVC alloc] init];
+        vc.carPlayDelegate = self.carPlayDelegate;
+        vc.listId = lid;
+        vc.listTitle = ttl;
+        vc.pluginHash = ph;
+        [self.navigationController pushViewController:vc animated:YES];
+
+        /* 请求 JS 拉曲目 */
+        [MFCarPlayBridge emitTopListDetail:ph listId:lid title:ttl];
+        return;
+    }
+
+    if (self.selectedTab == 3) {
         /* 最近播放 -> 直接播放 + 跳播放页 */
         if (indexPath.row >= (NSInteger)self.sheets.count) {
             return;
@@ -3225,6 +3335,131 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
 
 
+@implementation MFCarPlayWindowTopListVC
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor = MFCarPlayBackgroundColor();
+    self.tracks = @[];
+
+    /* 表格 */
+    self.table = [[UITableView alloc] initWithFrame:self.view.bounds
+                                              style:UITableViewStylePlain];
+    self.table.dataSource = self;
+    self.table.delegate = self;
+    self.table.rowHeight = 76.0;
+    self.table.backgroundColor = [UIColor clearColor];
+    self.table.separatorStyle = UITableViewCellSeparatorStyleNone;
+    self.table.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.table];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [self.table.topAnchor constraintEqualToAnchor:self.view.topAnchor constant:64],
+        [self.table.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [self.table.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
+        [self.table.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
+    ]];
+
+    /* 加载指示器（等 JS 回传时显示） */
+    self.spinner = [[UIActivityIndicatorView alloc] init];
+    self.spinner.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.spinner startAnimating];
+    [self.view addSubview:self.spinner];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.spinner.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [self.spinner.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
+    ]];
+
+    /* 返回按钮 + 标题（最后加，保证在最上层） */
+    MFAddTopTitle(self, self.listTitle);
+    MFAddBackButton(self);
+
+    /* 监听 JS 回传的曲目 */
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleTopListTracks:)
+                                                 name:@"MFCarPlayTopListTracks"
+                                               object:nil];
+
+    MFCarPlayLogBoth(@"TOPLIST VC: title=%@ listId=%@ plugin=%@",
+          self.listTitle, self.listId, self.pluginHash);
+}
+
+- (void)handleTopListTracks:(NSNotification *)note {
+    NSString *lid = note.userInfo[@"listId"];
+    NSArray *tracks = note.userInfo[@"tracks"];
+
+    /* 校验：只接受当前榜单的结果 */
+    if (![lid isKindOfClass:[NSString class]] ||
+        ![lid isEqualToString:self.listId ?: @""]) {
+        return;
+    }
+    if (![tracks isKindOfClass:[NSArray class]]) {
+        return;
+    }
+
+    self.tracks = tracks;
+    [self.spinner stopAnimating];
+    self.spinner.hidden = YES;
+    [self.table reloadData];
+
+    MFCarPlayLogBoth(@"TOPLIST VC: loaded %lu tracks for '%@'",
+          (unsigned long)tracks.count, self.listTitle);
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return (NSInteger)self.tracks.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView
+         cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *cid = @"tltrack";
+    MFCarPlayListCell *cell = (MFCarPlayListCell *)[tableView dequeueReusableCellWithIdentifier:cid];
+    if (!cell) {
+        cell = [[MFCarPlayListCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                        reuseIdentifier:cid];
+    }
+    if (indexPath.row < (NSInteger)self.tracks.count) {
+        NSDictionary *tr = self.tracks[(NSUInteger)indexPath.row];
+        NSString *tt = [tr[@"title"] isKindOfClass:[NSString class]] ? tr[@"title"] : @"";
+        NSString *ar = [tr[@"artist"] isKindOfClass:[NSString class]] ? tr[@"artist"] : @"";
+        NSString *al = [tr[@"album"] isKindOfClass:[NSString class]] ? tr[@"album"] : @"";
+        NSString *sub = @"";
+        if (ar.length > 0 && al.length > 0) {
+            sub = [NSString stringWithFormat:@"%@  \u00b7  %@", ar, al];
+        } else {
+            sub = ar.length > 0 ? ar : al;
+        }
+        NSString *cover = [tr[@"artwork"] isKindOfClass:[NSString class]] ? tr[@"artwork"] : nil;
+        [cell configureWithTitle:tt subtitle:sub cover:cover];
+    }
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (indexPath.row >= (NSInteger)self.tracks.count) {
+        return;
+    }
+    NSDictionary *tr = self.tracks[(NSUInteger)indexPath.row];
+    NSString *tid = [tr[@"id"] isKindOfClass:[NSString class]] ? tr[@"id"] : @"";
+
+    MFCarPlayLogBoth(@"TOPLIST tap row=%ld track=%@", (long)indexPath.row, tid);
+    [MFCarPlayBridge emitPlayTrack:tid sheetId:@""];
+
+    /* 用点中的数据直接构造播放页（不读 MMKV，避免竞态） */
+    MFCarPlayWindowNowPlayingVC *np = [[MFCarPlayWindowNowPlayingVC alloc] init];
+    np.carPlayDelegate = self.carPlayDelegate;
+    np.nowPlaying = MFNowPlayingFromTrack(tr);
+    [self.navigationController pushViewController:np animated:YES];
+}
+
+- (void)onBack {
+    MFCarPlayLogBoth(@"%@ tap BACK", @"MFCarPlayWindowTopListVC");
+    [self.navigationController popViewControllerAnimated:YES];
+}
+
+@end
+
 @implementation MFCarPlayWindowNowPlayingVC
 
 - (void)viewDidLoad {
@@ -3386,6 +3621,41 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     self.progressView.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.progressView];
 
+    /*
+     * ============ 11142661：爱心 / 循环 / 音质 ============
+     *
+     * 位置：进度条右侧一行，三个小圆按钮。
+     * 图标用 unichar 构造，避免源码非 ASCII。
+     *   ♥ U+2665 实心 / U+2661 空心
+     *   ↻ U+21BB 循环
+     *   ♪ U+266A 音质
+     */
+    self.favoriteButton = [self makeSmallButton:0x2661 action:@selector(onFavorite)];
+    self.repeatButton = [self makeSmallButton:0x21BB action:@selector(onRepeat)];
+    self.qualityButton = [self makeSmallButton:0x266A action:@selector(onQuality)];
+
+    for (UIButton *b in @[self.favoriteButton, self.repeatButton, self.qualityButton]) {
+        [self.view addSubview:b];
+    }
+
+    [NSLayoutConstraint activateConstraints:@[
+        /* 三个按钮：进度条下方，右对齐 */
+        [self.qualityButton.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-40],
+        [self.qualityButton.topAnchor constraintEqualToAnchor:self.progressView.bottomAnchor constant:10],
+        [self.qualityButton.widthAnchor constraintEqualToConstant:56],
+        [self.qualityButton.heightAnchor constraintEqualToConstant:44],
+
+        [self.repeatButton.trailingAnchor constraintEqualToAnchor:self.qualityButton.leadingAnchor constant:-16],
+        [self.repeatButton.centerYAnchor constraintEqualToAnchor:self.qualityButton.centerYAnchor],
+        [self.repeatButton.widthAnchor constraintEqualToConstant:56],
+        [self.repeatButton.heightAnchor constraintEqualToConstant:44],
+
+        [self.favoriteButton.trailingAnchor constraintEqualToAnchor:self.repeatButton.leadingAnchor constant:-16],
+        [self.favoriteButton.centerYAnchor constraintEqualToAnchor:self.qualityButton.centerYAnchor],
+        [self.favoriteButton.widthAnchor constraintEqualToConstant:56],
+        [self.favoriteButton.heightAnchor constraintEqualToConstant:44],
+    ]];
+
     /* 布局：1016 宽的车机屏幕，居中排布 */
     UIView *v = self.view;
     [NSLayoutConstraint activateConstraints:@[
@@ -3532,6 +3802,63 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
                                [self formatTime:total]];
     }
 
+    /*
+     * ============ 11142661：爱心 / 循环 / 音质 状态显示 ============
+     *
+     * JS 回传的 state 里有：
+     *   isFavorite  NSNumber  1=已收藏
+     *   repeatMode  NSString  "QUEUE" / "SINGLE" / "SHUFFLE"
+     *   quality     NSString  "standard" / "high" / "super"
+     */
+    NSNumber *fav = [state[@"isFavorite"] isKindOfClass:[NSNumber class]]
+        ? state[@"isFavorite"] : nil;
+    NSString *repeat = [state[@"repeatMode"] isKindOfClass:[NSString class]]
+        ? state[@"repeatMode"] : nil;
+    NSString *quality = [state[@"quality"] isKindOfClass:[NSString class]]
+        ? state[@"quality"] : nil;
+
+    /* 爱心：实心 U+2665 / 空心 U+2661，收藏时用主题色 */
+    if (self.favoriteButton && fav) {
+        unichar hc = fav.boolValue ? 0x2665 : 0x2661;
+        NSString *hs = [NSString stringWithCharacters:&hc length:1];
+        [self.favoriteButton setTitle:hs forState:0];
+        [self.favoriteButton setTitleColor:(fav.boolValue
+                                            ? MFCarPlayAccentColor()
+                                            : [UIColor colorWithRed:0.75 green:0.75 blue:0.78 alpha:1.0])
+                                  forState:0];
+    }
+
+    /* 循环：QUEUE 列表 U+21BB / SINGLE 单曲 U+21BA / SHUFFLE 随机 U+21C4 */
+    if (self.repeatButton && repeat) {
+        unichar rc = 0x21BB;
+        if ([repeat isEqualToString:@"SINGLE"]) {
+            rc = 0x21BA;
+        } else if ([repeat isEqualToString:@"SHUFFLE"]) {
+            rc = 0x21C4;
+        }
+        NSString *rs = [NSString stringWithCharacters:&rc length:1];
+        [self.repeatButton setTitle:rs forState:0];
+        /* 非默认模式用主题色，一眼看出不是列表循环 */
+        BOOL nonDefault = ![repeat isEqualToString:@"QUEUE"];
+        [self.repeatButton setTitleColor:(nonDefault
+                                          ? MFCarPlayAccentColor()
+                                          : [UIColor colorWithRed:0.75 green:0.75 blue:0.78 alpha:1.0])
+                                forState:0];
+    }
+
+    /* 音质：在按钮下方用 title 无法表达，改用不同符号区分 */
+    if (self.qualityButton && quality) {
+        /* standard=♪  high=♫  super=♬ */
+        unichar qc = 0x266A;
+        if ([quality isEqualToString:@"high"]) {
+            qc = 0x266B;
+        } else if ([quality isEqualToString:@"super"] || [quality isEqualToString:@"lossless"]) {
+            qc = 0x266C;
+        }
+        NSString *qs = [NSString stringWithCharacters:&qc length:1];
+        [self.qualityButton setTitle:qs forState:0];
+    }
+
     /* 4. 歌词高亮联动 */
     self.currentProgress = cur;
     [self refreshLyricHighlight];
@@ -3557,6 +3884,35 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     int m = total / 60;
     int s = total % 60;
     return [NSString stringWithFormat:@"%d:%02d", m, s];
+}
+
+/* 11142661：小圆按钮工厂 */
+- (UIButton *)makeSmallButton:(unichar)code action:(SEL)action {
+    UIButton *b = [UIButton buttonWithType:0];
+    NSString *sym = [NSString stringWithCharacters:&code length:1];
+    [b setTitle:sym forState:0];
+    [b setTitleColor:[UIColor colorWithRed:0.75 green:0.75 blue:0.78 alpha:1.0] forState:0];
+    b.titleLabel.font = [UIFont systemFontOfSize:24.0];
+    b.backgroundColor = MFCarPlayCardColor();
+    b.layer.cornerRadius = 8.0;
+    b.translatesAutoresizingMaskIntoConstraints = NO;
+    [b addTarget:self action:action forControlEvents:64];
+    return b;
+}
+
+- (void)onFavorite {
+    MFCarPlayLogBoth(@"NOWPLAYING tap FAVORITE");
+    [MFCarPlayBridge emitControl:@"favorite"];
+}
+
+- (void)onRepeat {
+    MFCarPlayLogBoth(@"NOWPLAYING tap REPEAT");
+    [MFCarPlayBridge emitControl:@"repeat"];
+}
+
+- (void)onQuality {
+    MFCarPlayLogBoth(@"NOWPLAYING tap QUALITY");
+    [MFCarPlayBridge emitControl:@"quality"];
 }
 
 - (void)onPrev {

@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142661"
+EXPECTED_VERSION = "11142663"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -103,8 +103,6 @@ BINARY_MARKERS = [
     b"NOWPLAYING tap PLAY/PAUSE",
     b"NOWPLAYING tap NEXT",
     b"NOWPLAYING cover loaded %lu bytes",
-    b"ROOT ready: 3 tabs + JS bridge listeners, selected=0",
-    b"ROOT tab -> %ld (0=sheets 1=search 2=history)",
     b"ROOT search '%@' -> local=%lu jsReady=%d",
     b"ROOT sheets tap row=%ld sheet=%@",
     b"ROOT history tap row=%ld track=%@",
@@ -123,6 +121,14 @@ BINARY_MARKERS = [
     b"SEARCH kb: win=%@ isKey=%d fieldAlpha=%.1f interaction=%d",
     b"SEARCH kb: using built-in keyboard (system kb blocked by CarPlay)",
     b"NOWPLAYING state: playing=%@ pos=%.0f/%.0f",
+    b"NOWPLAYING tap FAVORITE",
+    b"NOWPLAYING tap REPEAT",
+    b"NOWPLAYING tap QUALITY",
+    b"ROOT tab -> %ld (0=sheets 1=search 2=toplist 3=history)",
+    b"ROOT topLists loaded: %lu",
+    b"TOPLIST VC: title=%@ listId=%@ plugin=%@",
+    b"TOPLIST VC: loaded %lu tracks for '%@'",
+    b"TOPLIST tap row=%ld track=%@",
 ]
 
 # 旧版已证伪/致命的标记，产物里绝不能再出现

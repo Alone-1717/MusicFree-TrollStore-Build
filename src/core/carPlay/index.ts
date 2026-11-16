@@ -13,6 +13,8 @@
 import { NativeEventEmitter, NativeModules, Platform } from "react-native";
 
 import MusicSheet from "@/core/musicSheet";
+import { MusicRepeatMode } from "@/constants/repeatModeConst";
+import PluginManager from "@/core/pluginManager";
 import TrackPlayer from "@/core/trackPlayer";
 import { errorLog, trace } from "@/utils/log";
 import { getDefaultStore } from "jotai";
@@ -96,6 +98,86 @@ function pushNowPlaying(musicItem?: any) {
     }
 }
 
+/* ============ 11142661：爱心 / 循环 / 音质 ============ */
+
+/**
+ * 收藏 / 取消收藏当前歌曲。
+ *
+ * 用的是 MusicSheet 的默认歌单（id = "favorite"），
+ * 和手机端 heartIcon 组件的逻辑完全一致：
+ *   add    -> MusicSheet.addMusic(MusicSheet.defaultSheet.id, item)
+ *   remove -> MusicSheet.removeMusic(MusicSheet.defaultSheet.id, item)
+ */
+function toggleFavoriteForCurrent() {
+    try {
+        const music = TrackPlayer.currentMusic;
+        if (!music) {
+            return;
+        }
+        const sheetId = MusicSheet.defaultSheet?.id ?? "favorite";
+        const isFav = MusicSheet.isMusicInSheet?.(sheetId, music) ?? false;
+
+        if (isFav) {
+            MusicSheet.removeMusic(sheetId, music);
+            trace(`[CarPlay] unfavorite: ${music.title}`);
+        } else {
+            MusicSheet.addMusic(sheetId, music);
+            trace(`[CarPlay] favorite: ${music.title}`);
+        }
+
+        /* 立即回传新状态，让车机爱心图标马上变 */
+        pushNowPlayingState();
+    } catch (e) {
+        errorLog("[CarPlay] toggleFavorite", e);
+    }
+}
+
+/**
+ * 循环模式切换：列表循环 -> 单曲循环 -> 随机播放 -> 列表循环
+ *
+ * setRepeatMode 是 private，不能直接调；
+ * 用 toggleRepeat()（trackPlayer 的公开方法），它内部走
+ * toggleRepeatMapping 做三态轮转。
+ */
+function cycleRepeatMode() {
+    try {
+        const next = {
+            [MusicRepeatMode.QUEUE]: MusicRepeatMode.SINGLE,
+            [MusicRepeatMode.SINGLE]: MusicRepeatMode.SHUFFLE,
+            [MusicRepeatMode.SHUFFLE]: MusicRepeatMode.QUEUE,
+        }[TrackPlayer.repeatMode as MusicRepeatMode] ?? MusicRepeatMode.QUEUE;
+
+        /* @ts-expect-error setRepeatMode 是 private，但运行时可用 */
+        TrackPlayer.setRepeatMode(next);
+        trace(`[CarPlay] repeat -> ${next}`);
+        pushNowPlayingState();
+    } catch (e) {
+        errorLog("[CarPlay] cycleRepeatMode", e);
+    }
+}
+
+/**
+ * 音质切换：standard -> high -> super -> standard
+ *
+ * 注意：音质只在「下一次取播放地址」时生效，
+ * 当前这首不会立即变（这是 trackPlayer 的既有行为）。
+ */
+function cycleQuality() {
+    try {
+        const order = ["standard", "high", "super"];
+        const cur = TrackPlayer.quality ?? "standard";
+        const idx = order.indexOf(cur as string);
+        const next = order[(idx + 1) % order.length];
+
+        /* @ts-expect-error setQuality 是 private，但运行时可用 */
+        TrackPlayer.setQuality(next);
+        trace(`[CarPlay] quality -> ${next}`);
+        pushNowPlayingState();
+    } catch (e) {
+        errorLog("[CarPlay] cycleQuality", e);
+    }
+}
+
 /** 车机控制指令 */
 async function handleControl(action: string) {
     try {
@@ -115,6 +197,30 @@ async function handleControl(action: string) {
             case "prev":
                 await TrackPlayer.skipToPrevious();
                 break;
+
+            /* ============ 11142661：爱心 / 循环 / 音质 ============ */
+            case "toggle":
+                /* 播放/暂停切换（播放页中间按钮） */
+                await TrackPlayer.togglePlay();
+                break;
+
+            case "favorite":
+                toggleFavoriteForCurrent();
+                break;
+
+            case "repeat":
+                cycleRepeatMode();
+                break;
+
+            case "quality":
+                cycleQuality();
+                break;
+
+            /* ============ 11142662：榜单 ============ */
+            case "requestTopLists":
+                pushTopLists();
+                break;
+
             default:
                 break;
         }
@@ -171,6 +277,92 @@ function pushLyric() {
     }
 }
 
+/* ============ 11142662：榜单 ============ */
+
+/**
+ * 推送榜单列表给原生（平铺所有插件）。
+ *
+ * 数据结构（平铺后）：
+ *   { pluginHash, pluginName, title, id, coverImg, description }
+ *
+ * 来源：每个插件的 getTopLists()，返回分组数组，
+ *      每组的 data 是一个榜单数组，这里把两层拍平成一层。
+ */
+async function pushTopLists() {
+    if (!NativeBridge?.setTopLists) {
+        return;
+    }
+    try {
+        const plugins = PluginManager.getSearchablePlugins?.() ?? [];
+        const out: any[] = [];
+
+        for (const plugin of plugins) {
+            try {
+                const groups = await plugin?.methods?.getTopLists?.();
+                if (!Array.isArray(groups)) {
+                    continue;
+                }
+                for (const g of groups) {
+                    const items = g?.data ?? [];
+                    for (const it of items) {
+                        out.push({
+                            pluginHash: plugin.hash ?? "",
+                            pluginName: plugin.name ?? "",
+                            id: String(it?.id ?? ""),
+                            title: String(it?.title ?? ""),
+                            coverImg: String(it?.coverImg ?? ""),
+                            description: String(it?.description ?? ""),
+                        });
+                    }
+                }
+            } catch (e) {
+                /* 单个插件失败不影响其他 */
+            }
+        }
+
+        NativeBridge.setTopLists(out);
+        trace(`[CarPlay] pushed ${out.length} top lists`);
+    } catch (e) {
+        errorLog("[CarPlay] pushTopLists", e);
+    }
+}
+
+/**
+ * 车机点了某个榜单 -> 拉取详情曲目 -> 回传原生。
+ *
+ * 原生传上来的是 pluginHash + listId + title。
+ */
+async function fetchTopListDetail(pluginHash: string, listId: string, title: string) {
+    try {
+        const plugin = PluginManager.getByHash?.(pluginHash);
+        if (!plugin?.methods?.getTopListDetail) {
+            errorLog("[CarPlay] topListDetail: plugin not found", { pluginHash });
+            NativeBridge?.setTopListTracks?.([], listId);
+            return;
+        }
+
+        const result = await plugin.methods.getTopListDetail(
+            { id: listId, title } as any,
+            1,
+        );
+
+        const tracks = (result?.musicList ?? []).map((x: any) => ({
+            id: String(x?.id ?? ""),
+            title: String(x?.title ?? ""),
+            artist: String(x?.artist ?? ""),
+            album: String(x?.album ?? ""),
+            artwork: String(x?.artwork ?? ""),
+            platform: String(x?.platform ?? plugin.name ?? ""),
+        }));
+
+        trace(`[CarPlay] topList detail '${title}' -> ${tracks.length} tracks`);
+        NativeBridge?.setTopListTracks?.(tracks, listId);
+    } catch (e) {
+        errorLog("[CarPlay] fetchTopListDetail", e);
+        NativeBridge?.setTopListTracks?.([], listId);
+    }
+}
+
 /**
  * 处理车机的联网搜索请求。
  *
@@ -202,6 +394,29 @@ async function handleSearch(query: string) {
  *   只是把当前 TrackPlayer 状态快照发过去，验证通路。
  *   下一轮再加定时器做进度条实时刷新。
  */
+/**
+ * 11142661：当前歌曲是否已收藏。
+ *
+ * 收藏就是「在默认歌单（favorite）里」，
+ * 和手机端 heartIcon 组件同一套判断。
+ */
+function isCurrentFavorite(music: any): boolean {
+    if (!music) {
+        return false;
+    }
+    try {
+        const sheetId = MusicSheet.defaultSheet?.id ?? "favorite";
+        if (typeof MusicSheet.isMusicInSheet === "function") {
+            return MusicSheet.isMusicInSheet(sheetId, music) ?? false;
+        }
+        /* 退路：查默认歌单的曲目列表 */
+        const list = MusicSheet.getSortedMusicListBySheetId?.(sheetId)?.musicList ?? [];
+        return list.some((x: any) => x?.id === music.id);
+    } catch (e) {
+        return false;
+    }
+}
+
 async function pushNowPlayingState() {
     if (!NativeBridge?.setNowPlayingState) {
         return;
@@ -242,10 +457,11 @@ async function pushNowPlayingState() {
             progress,
             duration,
             isPlaying,
-            repeatMode: TrackPlayer.repeatMode ?? "loop",
+            repeatMode: TrackPlayer.repeatMode ?? "QUEUE",
             quality: TrackPlayer.quality ?? "standard",
             rate: 1.0,
-            isFavorite: 0,
+            /* 11142661：真实收藏状态（之前硬编码 0，爱心永远空心） */
+            isFavorite: isCurrentFavorite(music) ? 1 : 0,
         });
         trace(`[CarPlay] pushed state: ${music?.title ?? "(none)"} playing=${isPlaying} progress=${progress}`);
     } catch (e) {
@@ -291,6 +507,17 @@ export function setupCarPlay() {
     em.addListener("CarPlaySearch", (e: { query?: string }) => {
         if (e?.query) {
             handleSearch(e.query);
+        }
+    });
+
+    /* 11142662：车机点榜单 -> JS 拉详情 */
+    em.addListener("CarPlayTopListDetail", (e: {
+        pluginHash?: string;
+        listId?: string;
+        title?: string;
+    }) => {
+        if (e?.pluginHash && e?.listId) {
+            fetchTopListDetail(e.pluginHash, e.listId, e.title ?? "");
         }
     });
 
@@ -380,7 +607,10 @@ export function setupCarPlay() {
         }
     }, 500);
 
-    trace("[CarPlay] JS bridge started (search + state + lyric channels ready, 500ms state ticker)");
+    /* 11142662：启动时拉一次榜单（异步，不阻塞） */
+    pushTopLists();
+
+    trace("[CarPlay] JS bridge started (search + state + lyric + toplist channels ready)");
 }
 
 export default {

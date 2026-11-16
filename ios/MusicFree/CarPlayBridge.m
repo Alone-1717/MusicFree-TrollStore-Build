@@ -33,6 +33,9 @@ static NSString *const kMFCarPlayNowPlayingState = @"MFCarPlayNowPlayingState";
 static NSString *const kMFCarPlayJSReady = @"MFCarPlayJSReady";
 /* 11142657：歌词推送（JS -> 原生） */
 static NSString *const kMFCarPlayLyric = @"MFCarPlayLyric";
+/* 11142662：榜单 */
+static NSString *const kMFCarPlayTopLists = @"MFCarPlayTopLists";
+static NSString *const kMFCarPlayTopListTracks = @"MFCarPlayTopListTracks";
 
 /* JS 就绪标记（进程级，供原生判断要不要等 JS） */
 static BOOL sJSReady = NO;
@@ -52,6 +55,10 @@ static NSUInteger const kMFCarPlayMaxPendingEvents = 50;
 @property (nonatomic, copy) NSString *lastSearchQuery;
 /* 11142657：当前歌词（@[{time, lrc, translation}]） */
 @property (nonatomic, strong) NSArray *lyricLines;
+/* 11142662：榜单列表 + 某个榜单的曲目 */
+@property (nonatomic, strong) NSArray *topListsData;
+@property (nonatomic, strong) NSArray *topListTracksData;
+@property (nonatomic, copy) NSString *topListTracksId;
 - (void)postDataUpdate:(NSDictionary *)userInfo;
 - (void)sendCarPlayEvent:(NSString *)name body:(NSDictionary *)body;
 - (void)flushPendingEvents;
@@ -83,6 +90,9 @@ static MFCarPlayBridge *sharedInstance = nil;
         _nowPlayingStateData = @{};
         _lastSearchQuery = @"";
         _lyricLines = @[];
+        _topListsData = @[];
+        _topListTracksData = @[];
+        _topListTracksId = @"";
         sharedInstance = self;
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                  selector:@selector(handleCarPlayEvent:)
@@ -109,7 +119,7 @@ RCT_EXPORT_MODULE(CarPlayBridge);
 
 - (NSArray<NSString *> *)supportedEvents {
     return @[@"CarPlayPlayTrack", @"CarPlayRequestTracks", @"CarPlayControl",
-             @"CarPlaySearch"];
+             @"CarPlaySearch", @"CarPlayTopListDetail"];
 }
 
 - (void)startObserving {
@@ -279,6 +289,70 @@ RCT_EXPORT_METHOD(setLyric:(NSArray *)lines)
 /* 查询当前歌词 */
 - (NSArray *)lyric {
     return self.lyricLines ?: @[];
+}
+
+#pragma mark - 11142662：榜单
+
+/*
+ * JS 回传榜单列表（已平铺所有插件的榜单）。
+ *
+ * 每项：{ pluginHash, pluginName, id, title, coverImg, description }
+ */
+RCT_EXPORT_METHOD(setTopLists:(NSArray *)lists)
+{
+    self.topListsData = [lists isKindOfClass:[NSArray class]] ? lists : @[];
+    NSLog(@"[MusicFree][CarPlay] BRIDGE got %lu top lists",
+          (unsigned long)self.topListsData.count);
+
+    [[NSNotificationCenter defaultCenter] postNotificationName:kMFCarPlayTopLists
+                                                        object:nil
+                                                      userInfo:@{@"lists": self.topListsData}];
+}
+
+/*
+ * JS 回传某个榜单的曲目。
+ *
+ * listId 用于校验：用户可能已经点了别的榜单，旧结果要丢弃。
+ */
+RCT_EXPORT_METHOD(setTopListTracks:(NSArray *)tracks listId:(NSString *)listId)
+{
+    self.topListTracksData = [tracks isKindOfClass:[NSArray class]] ? tracks : @[];
+    self.topListTracksId = [listId isKindOfClass:[NSString class]] ? listId : @"";
+
+    NSLog(@"[MusicFree][CarPlay] BRIDGE got %lu tracks for top list '%@'",
+          (unsigned long)self.topListTracksData.count, self.topListTracksId);
+
+    [[NSNotificationCenter defaultCenter] postNotificationName:kMFCarPlayTopListTracks
+                                                        object:nil
+                                                      userInfo:@{
+        @"listId": self.topListTracksId,
+        @"tracks": self.topListTracksData,
+    }];
+}
+
+/* 查询接口 */
+- (NSArray *)topLists {
+    return self.topListsData ?: @[];
+}
+
+- (NSArray *)topListTracks {
+    return self.topListTracksData ?: @[];
+}
+
+- (NSString *)topListTracksListId {
+    return self.topListTracksId ?: @"";
+}
+
+/*
+ * 原生 -> JS：请求拉取某个榜单的曲目。
+ */
++ (void)emitTopListDetail:(NSString *)pluginHash listId:(NSString *)listId title:(NSString *)title {
+    [self postEvent:@"CarPlayTopListDetail" body:@{
+        @"pluginHash": pluginHash ?: @"",
+        @"listId": listId ?: @"",
+        @"title": title ?: @"",
+    }];
+    NSLog(@"[MusicFree][CarPlay] emitted CarPlayTopListDetail '%@'", title);
 }
 
 /*

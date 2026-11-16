@@ -59,6 +59,23 @@
 /** 11142657：当前歌词 @[{time, lrc, translation}] */
 - (NSArray *)lyric;
 
+/* ============ 11142662：榜单 ============ */
+
+/**
+ * 原生 -> JS：请求某个榜单的曲目。
+ * JS 收到后调插件 getTopListDetail，再用 setTopListTracks:listId: 回传。
+ */
++ (void)emitTopListDetail:(NSString *)pluginHash
+                   listId:(NSString *)listId
+                    title:(NSString *)title;
+
+/** 榜单列表（平铺所有插件） */
+- (NSArray *)topLists;
+/** 最近一次榜单曲目 */
+- (NSArray *)topListTracks;
+/** 上面曲目属于哪个榜单 */
+- (NSString *)topListTracksListId;
+
 /** JS 监听器注册完成后主动冲刷 RN 就绪前排队的车机事件 */
 - (void)carPlayJSReady;
 
