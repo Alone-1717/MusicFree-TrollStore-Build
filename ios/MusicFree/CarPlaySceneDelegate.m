@@ -5533,7 +5533,13 @@ MFCarPlayLogBoth(@"[VDL] progressTap done");
          * 系统 textLabel 会重置 textAlignment 且带内边距 -> 文字贴左
          * 改用 contentView 上的自定义 label，全宽居中
          */
-        UILabel *mfLyric = [cell.contentView viewWithTag:8801];
+        /*
+         * 11142704：viewWithTag: 返回 UIView*，必须判类型再转
+         * 直接 UILabel *x = [view viewWithTag:] 在真实 SDK 下是编译错误
+         */
+        UIView *mfLyricRaw = [cell.contentView viewWithTag:8801];
+        UILabel *mfLyric = [mfLyricRaw isKindOfClass:[UILabel class]]
+            ? (UILabel *)mfLyricRaw : nil;
         if (!mfLyric) {
             mfLyric = [[UILabel alloc] init];
             mfLyric.tag = 8801;
@@ -5691,7 +5697,9 @@ MFCarPlayLogBoth(@"[VDL] progressTap done");
     }
 
     /* 11142704：自定义歌词 label 全宽居中 */
-    UILabel *mfLyric = [cell.contentView viewWithTag:8801];
+    UIView *mfLyricRaw2 = [cell.contentView viewWithTag:8801];
+    UILabel *mfLyric = [mfLyricRaw2 isKindOfClass:[UILabel class]]
+        ? (UILabel *)mfLyricRaw2 : nil;
     if (mfLyric) {
         BOOL hasTrans = (trText && trText.length > 0);
         if (hasTrans) {
