@@ -122,6 +122,7 @@ function pushTracks(sheetId: string) {
 
 /** 点歌：用 playWithReplacePlayList 播放整张歌单，从选中曲目开始 */
 async function playTrack(trackId: string, sheetId: string) {
+    logToNative(`[PLAY] request track=${trackId} sheet="${sheetId}"`);
     try {
         /*
          * ============ 11142668：支持播放非歌单曲目 ============
@@ -274,6 +275,8 @@ function cycleQuality() {
 
 /** 车机控制指令 */
 async function handleControl(action: string) {
+    /* 11142675：记录收到的控制指令 */
+    logToNative(`[CTRL] recv "${action}"`);
     try {
         switch (action) {
             case "requestSheets":
@@ -389,7 +392,7 @@ function pushLyric() {
             }));
 
         NativeBridge.setLyric(lines);
-        trace(`[CarPlay] pushed ${lines.length} lyric lines`);
+        logToNative(`[LYRIC] pushed ${lines.length} lines, first="${lines[0]?.lrc ?? ""}"`);
     } catch (e) {
         errorLog("[CarPlay] pushLyric", e);
     }
@@ -650,6 +653,15 @@ async function pushNowPlayingState() {
         }
 
         trace("[CarPlay] calling setNowPlayingState...");
+        try {
+            /* 11142675：每 10 次记一次状态推送 */
+            const g: any = globalThis as any;
+            g.__mfStatePushCount = (g.__mfStatePushCount ?? 0) + 1;
+            if (g.__mfStatePushCount % 10 === 1) {
+                logToNative(`[STATE] push #${g.__mfStatePushCount} ${music?.title ?? "-"} pos=${Math.floor(progress)}/${Math.floor(duration)} play=${isPlaying}`);
+            }
+        } catch (e) { /* 忽略 */ }
+
         NativeBridge.setNowPlayingState({
             title: music?.title ?? "",
             artist: music?.artist ?? "",
@@ -743,17 +755,45 @@ export function setupCarPlay() {
      * 所以用轮询兜底：每 2 秒检查一次歌词是否变了，变了就推。
      * （lyricManager 没有暴露事件订阅，轮询最稳）
      */
+    /*
+     * ============ 11142674：歌词轮询加固 ============
+     *
+     * 原问题：
+     *   1) 2 秒延迟太长，切歌后歌词要等 2 秒
+     *   2) 签名只用「行数+首行」，两首歌首行相同时不会推送
+     *
+     * 改进：
+     *   1) 间隔 2000 -> 800ms
+     *   2) 签名加入当前曲目 id，切歌必推
+     */
     let lastLyricSig = "";
     setInterval(() => {
         try {
             const lyricModule = require("@/core/lyricManager");
             const mgr = lyricModule.default ?? lyricModule;
             const state = mgr?.lyricState;
-            if (!state || state.loading || !Array.isArray(state.lyrics)) {
+
+            /* 签名带曲目 id，切歌一定能检测到 */
+            const curId = String(TrackPlayer.currentMusic?.id ?? "");
+
+            if (!state || !Array.isArray(state.lyrics)) {
+                /* 还没歌词，但如果切歌了要记录，避免下次误判 */
+                if (curId !== lastLyricSig.split("|")[0]) {
+                    lastLyricSig = curId + "|empty";
+                }
                 return;
             }
-            /* 用「行数 + 首行时间」做签名，避免每 2 秒都推 */
-            const sig = `${state.lyrics.length}|${state.lyrics[0]?.time ?? ""}|${state.lyrics[0]?.lrc ?? ""}`;
+            if (state.loading) {
+                return;
+            }
+
+            const sig = [
+                curId,
+                state.lyrics.length,
+                state.lyrics[0]?.time ?? "",
+                state.lyrics[0]?.lrc ?? "",
+            ].join("|");
+
             if (sig !== lastLyricSig) {
                 lastLyricSig = sig;
                 pushLyric();
@@ -761,7 +801,7 @@ export function setupCarPlay() {
         } catch (e) {
             /* 静默 */
         }
-    }, 2000);
+    }, 800);
 
     /*
      * ============ 11142661：播放状态实时推送 ============

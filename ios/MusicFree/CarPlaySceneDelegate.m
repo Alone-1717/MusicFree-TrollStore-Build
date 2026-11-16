@@ -597,7 +597,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     [b setTitleColor:[UIColor whiteColor] forState:0];
     b.titleLabel.font = MFFont(20.0);
     b.backgroundColor = [UIColor colorWithRed:0.30 green:0.30 blue:0.33 alpha:1.0];
-    b.layer.cornerRadius = 6.0;
+    b.layer.cornerRadius = MFS(6.0);   /* 11142674: 键盘功能键，随屏幕缩放 */
     b.translatesAutoresizingMaskIntoConstraints = NO;
     [b addTarget:self action:action forControlEvents:64];
     return b;
@@ -629,7 +629,10 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
 - (void)onLetter:(UIButton *)sender {
     NSString *cur = self.targetField.text ?: @"";
-    [self commit:[cur stringByAppendingString:sender.titleLabel.text ?: @""]];
+    NSString *newText = [cur stringByAppendingString:sender.titleLabel.text ?: @""];
+    MFCarPlayLogBoth(@"[KEYBOARD] letter '%@' -> '%@'",
+          sender.titleLabel.text ?: @"?", newText);
+    [self commit:newText];
 }
 
 - (void)onDelete {
@@ -921,7 +924,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 /* ============ 11142661：爱心 / 循环 / 音质 ============ */
 @property (nonatomic, strong) UIButton *favoriteButton;
 @property (nonatomic, strong) UIButton *repeatButton;
-@property (nonatomic, strong) UIButton *qualityButton;
+/* 11142673：qualityButton 已移除（用户要求，音质切换价值低） */
 @end
 
 
@@ -1022,7 +1025,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     self.searchField.backgroundColor = MFCarPlayCardColor();
     self.searchField.layer.borderColor = [UIColor whiteColor].CGColor;
     self.searchField.layer.borderWidth = 1.0;
-    self.searchField.layer.cornerRadius = 8.0;
+    self.searchField.layer.cornerRadius = MFS(8.0);   /* 11142674: 随屏幕缩放 */
     /*
      * 11142668：搜索框内左边距。
      *
@@ -1349,7 +1352,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 - (void)onBackgroundTap {
     if (self.keyboardView && !self.keyboardView.hidden) {
         self.keyboardView.hidden = YES;
-        MFCarPlayLogBoth(@"ROOT bg tap -> hide keyboard");
+        MFCarPlayLogBoth(@"[KEYBOARD] hidden by bg tap");
     }
 }
 
@@ -4030,77 +4033,110 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
      *   ↻ U+21BB 循环
      *   ♪ U+266A 音质
      */
+    /* 11142673：只保留 ♡ 和 ↻（♪ 音质按钮已移除） */
     self.favoriteButton = [self makeSmallButton:0x2661 action:@selector(onFavorite)];
     self.repeatButton = [self makeSmallButton:0x21BB action:@selector(onRepeat)];
-    self.qualityButton = [self makeSmallButton:0x266A action:@selector(onQuality)];
 
-    for (UIButton *b in @[self.favoriteButton, self.repeatButton, self.qualityButton]) {
+    for (UIButton *b in @[self.favoriteButton, self.repeatButton]) {
         [self.view addSubview:b];
     }
 
-    [NSLayoutConstraint activateConstraints:@[
-        /* 三个按钮：进度条下方，右对齐 */
-        [self.qualityButton.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-40],
-        [self.qualityButton.topAnchor constraintEqualToAnchor:self.progressView.bottomAnchor constant:6],
-        [self.qualityButton.widthAnchor constraintEqualToConstant:MFS(56)],
-        [self.qualityButton.heightAnchor constraintEqualToConstant:MFS(44)],
+    /* 11142672：三按钮布局已移到主布局块（与播放键同一行），此处不再重复 */
 
-        [self.repeatButton.trailingAnchor constraintEqualToAnchor:self.qualityButton.leadingAnchor constant:-16],
-        [self.repeatButton.centerYAnchor constraintEqualToAnchor:self.qualityButton.centerYAnchor],
-        [self.repeatButton.widthAnchor constraintEqualToConstant:MFS(56)],
-        [self.repeatButton.heightAnchor constraintEqualToConstant:MFS(44)],
 
-        [self.favoriteButton.trailingAnchor constraintEqualToAnchor:self.repeatButton.leadingAnchor constant:-16],
-        [self.favoriteButton.centerYAnchor constraintEqualToAnchor:self.qualityButton.centerYAnchor],
-        [self.favoriteButton.widthAnchor constraintEqualToConstant:MFS(56)],
-        [self.favoriteButton.heightAnchor constraintEqualToConstant:MFS(44)],
-    ]];
-
-    /* 布局：1016 宽的车机屏幕，居中排布 */
+        /*
+     * ============ 11142672：播放页布局重做（按用户设计）============
+     *
+     * 目标布局：
+     *
+     *           歌名
+     *        歌手 / 专辑
+     *      [封面 168×168]
+     *   ◀◀   ▶   ▶▶    ♡ ↻ ♪      <- 三功能按钮与播放键同一行
+     *  ━━━━━●─────────
+     *    0:12  /  4:06
+     *
+     * 高度累加（屏幕 480）：
+     *   12 + 38 + 4 + 26 + 10 + 168 + 12 + 56 + 8 + 4 + 6 + 20 + 10 = 374
+     *   余量 106px，充裕。
+     *
+     * 关键改动：
+     *   1) 三功能按钮从「进度条下方」移到「与播放键同一行、右侧」
+     *   2) 整体依赖「自上而下」的约束链，不写死 y 坐标
+     *   3) 所有间距用 MFS() 保持屏幕自适应
+     */
     UIView *v = self.view;
+
     [NSLayoutConstraint activateConstraints:@[
-        /* 歌名 */
-        [self.titleLabel.topAnchor constraintEqualToAnchor:v.topAnchor constant:44],
-        [self.titleLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:24],
-        [self.titleLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-24],
+        /* --- 歌名：顶部 --- */
+        [self.titleLabel.topAnchor constraintEqualToAnchor:v.topAnchor constant:MFS(12)],
+        [self.titleLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(24)],
+        [self.titleLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(24)],
 
-        /* 歌手 */
-        [self.artistLabel.topAnchor constraintEqualToAnchor:self.titleLabel.bottomAnchor constant:8],
-        [self.artistLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:24],
-        [self.artistLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-24],
+        /* --- 歌手/专辑 --- */
+        [self.artistLabel.topAnchor constraintEqualToAnchor:self.titleLabel.bottomAnchor constant:MFS(4)],
+        [self.artistLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(24)],
+        [self.artistLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(24)],
 
-        /* 封面：居中，220x220 */
-        [self.coverView.topAnchor constraintEqualToAnchor:self.artistLabel.bottomAnchor constant:12],
+        /* --- 封面：居中 --- */
+        [self.coverView.topAnchor constraintEqualToAnchor:self.artistLabel.bottomAnchor constant:MFS(10)],
         [self.coverView.centerXAnchor constraintEqualToAnchor:v.centerXAnchor],
         [self.coverView.widthAnchor constraintEqualToConstant:MFS(168)],
         [self.coverView.heightAnchor constraintEqualToConstant:MFS(168)],
 
-        /* 上一首 / 播放 / 下一首：底部横排 */
-        [play.centerXAnchor constraintEqualToAnchor:v.centerXAnchor],
-        [play.topAnchor constraintEqualToAnchor:self.coverView.bottomAnchor constant:16],
-        [play.widthAnchor constraintEqualToConstant:MFS(120)],
+        /* ============================================================
+         * --- 按钮行：三个播放键 + 三个功能键 同一行 ---
+         *
+         * 排列（从左到右）：
+         *   ◀◀   ▶   ▶▶        ♡  ↻  ♪
+         *   ↑播放组居中偏左        ↑功能组靠右
+         * ============================================================ */
+
+        /* 播放键（中间）：水平居中偏左，让出右侧空间给功能键 */
+        [play.topAnchor constraintEqualToAnchor:self.coverView.bottomAnchor constant:MFS(12)],
+        [play.centerXAnchor constraintEqualToAnchor:v.centerXAnchor constant:-MFS(110)],
+        [play.widthAnchor constraintEqualToConstant:MFS(96)],
         [play.heightAnchor constraintEqualToConstant:MFS(56)],
 
-        [prev.trailingAnchor constraintEqualToAnchor:play.leadingAnchor constant:-24],
+        /* 上一首：播放键左侧 */
+        [prev.trailingAnchor constraintEqualToAnchor:play.leadingAnchor constant:-MFS(16)],
         [prev.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
-        [prev.widthAnchor constraintEqualToConstant:MFS(110)],
+        [prev.widthAnchor constraintEqualToConstant:MFS(90)],
         [prev.heightAnchor constraintEqualToConstant:MFS(56)],
 
-        [next.leadingAnchor constraintEqualToAnchor:play.trailingAnchor constant:24],
+        /* 下一首：播放键右侧 */
+        [next.leadingAnchor constraintEqualToAnchor:play.trailingAnchor constant:MFS(16)],
         [next.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
-        [next.widthAnchor constraintEqualToConstant:MFS(110)],
+        [next.widthAnchor constraintEqualToConstant:MFS(90)],
         [next.heightAnchor constraintEqualToConstant:MFS(56)],
 
-        /* 11142671：进度条再往下一点 */
-        [self.progressView.topAnchor constraintEqualToAnchor:play.bottomAnchor constant:6],
-        [self.progressView.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:40],
-        [self.progressView.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-40],
-        [self.progressView.heightAnchor constraintEqualToConstant:MFS(4)],
+        /* --- 两个功能键：同一行，靠右（♪ 已移除） --- */
 
-        /* 时间：进度条下方 */
-        [self.timeLabel.topAnchor constraintEqualToAnchor:self.progressView.bottomAnchor constant:4],
-        [self.timeLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:24],
-        [self.timeLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-24],
+        /* ↻ 循环模式：最右 */
+        [self.repeatButton.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(40)],
+        [self.repeatButton.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
+        [self.repeatButton.widthAnchor constraintEqualToConstant:MFS(56)],
+        [self.repeatButton.heightAnchor constraintEqualToConstant:MFS(56)],
+
+        /* ♡ 收藏：循环键左侧 */
+        [self.favoriteButton.trailingAnchor constraintEqualToAnchor:self.repeatButton.leadingAnchor constant:-MFS(16)],
+        [self.favoriteButton.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
+        [self.favoriteButton.widthAnchor constraintEqualToConstant:MFS(56)],
+        [self.favoriteButton.heightAnchor constraintEqualToConstant:MFS(56)],
+
+        /* --- 进度条：按钮行下方 --- */
+        /* 11142674：进度条下移，和按钮行拉开距离 */
+        [self.progressView.topAnchor constraintEqualToAnchor:play.bottomAnchor constant:MFS(24)],
+        [self.progressView.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(40)],
+        [self.progressView.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(40)],
+        /* 11142674：进度条加粗，车机屏上更明显 */
+        [self.progressView.heightAnchor constraintEqualToConstant:MFS(6)],
+
+        /* --- 时间文字：进度条下方 --- */
+        /* 11142674：时间文字也下移 */
+        [self.timeLabel.topAnchor constraintEqualToAnchor:self.progressView.bottomAnchor constant:MFS(16)],
+        [self.timeLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(24)],
+        [self.timeLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(24)],
     ]];
 
     self.lastRenderedTitle = title;
@@ -4145,146 +4181,25 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
                                              selector:@selector(handleLyricUpdate:)
                                                  name:@"MFCarPlayLyric"
                                                object:nil];
+
+    /* 11142672：确认观察者注册成功（诊断「收不到通知」问题） */
+    MFCarPlayLogBoth(@"NOWPLAYING observers registered: state+lyric, self=%p", self);
 }
 
 /* 收到 JS 播放状态 */
 - (void)handleNowPlayingState:(NSDictionary *)state {
+    /* 11142672：第一行记录，验证通知到达 */
+    MFCarPlayLogBoth(@"NOWPLAYING RECV state keys=%lu", (unsigned long)state.count);
+
     if (![state isKindOfClass:[NSDictionary class]]) {
         return;
     }
-
-    /* 11142671：记录 JS 推送时间，让原生轮询避让 */
+    /* 记录 JS 推送时间，让轮询避让（但轮询也会读桥，所以不会冲突） */
     self.lastJSStateTime = [NSDate timeIntervalSinceReferenceDate];
 
-    NSNumber *isPlaying = [state[@"isPlaying"] isKindOfClass:[NSNumber class]]
-        ? state[@"isPlaying"] : nil;
-    NSNumber *prog = [state[@"progress"] isKindOfClass:[NSNumber class]]
-        ? state[@"progress"] : nil;
-    NSNumber *dur = [state[@"duration"] isKindOfClass:[NSNumber class]]
-        ? state[@"duration"] : nil;
-
-    double cur = prog ? prog.doubleValue : 0;
-    double total = dur ? dur.doubleValue : 0;
-
-    MFCarPlayLogBoth(@"NOWPLAYING state: playing=%@ pos=%.0f/%.0f",
-          isPlaying, cur, total);
-
-    /*
-     * ============ 11142661：实时更新三件事 ============
-     *
-     * 由 JS 每 500ms 推送一次（pushNowPlayingState 里的 setInterval）。
-     *
-     *   1) 播放/暂停图标：isPlaying -> U+23F8 / U+25B6
-     *   2) 进度条：progress / duration
-     *   3) 时间文字 + 歌词高亮
-     */
-
-    /* 1. 图标切换 */
-    if (isPlaying && self.playPauseButton) {
-        unichar code = isPlaying.boolValue ? 0x23F8 : 0x25B6;
-        NSString *sym = [NSString stringWithCharacters:&code length:1];
-        [self.playPauseButton setTitle:sym forState:0];
-    }
-
-    /* 2. 进度条 */
-    if (self.progressView) {
-        if (total > 0) {
-            double ratio = cur / total;
-            if (ratio < 0) {
-                ratio = 0;
-            }
-            if (ratio > 1) {
-                ratio = 1;
-            }
-            /* 动画平滑过渡，避免每 500ms 硬跳一格 */
-            [self.progressView setProgress:ratio animated:YES];
-        } else {
-            self.progressView.progress = 0;
-        }
-    }
-
-    /* 3. 时间文字 */
-    if (self.timeLabel && total > 0) {
-        self.timeLabel.text = [NSString stringWithFormat:@"%@   /   %@",
-                               [self formatTime:cur],
-                               [self formatTime:total]];
-    }
-
-    /*
-     * ============ 11142661：爱心 / 循环 / 音质 状态显示 ============
-     *
-     * JS 回传的 state 里有：
-     *   isFavorite  NSNumber  1=已收藏
-     *   repeatMode  NSString  "QUEUE" / "SINGLE" / "SHUFFLE"
-     *   quality     NSString  "standard" / "high" / "super"
-     */
-    NSNumber *fav = [state[@"isFavorite"] isKindOfClass:[NSNumber class]]
-        ? state[@"isFavorite"] : nil;
-    NSString *repeat = [state[@"repeatMode"] isKindOfClass:[NSString class]]
-        ? state[@"repeatMode"] : nil;
-    NSString *quality = [state[@"quality"] isKindOfClass:[NSString class]]
-        ? state[@"quality"] : nil;
-
-    /* 爱心：实心 U+2665 / 空心 U+2661，收藏时用主题色 */
-    if (self.favoriteButton && fav) {
-        unichar hc = fav.boolValue ? 0x2665 : 0x2661;
-        NSString *hs = [NSString stringWithCharacters:&hc length:1];
-        [self.favoriteButton setTitle:hs forState:0];
-        [self.favoriteButton setTitleColor:(fav.boolValue
-                                            ? MFCarPlayAccentColor()
-                                            : [UIColor colorWithRed:0.75 green:0.75 blue:0.78 alpha:1.0])
-                                  forState:0];
-    }
-
-    /* 循环：QUEUE 列表 U+21BB / SINGLE 单曲 U+21BA / SHUFFLE 随机 U+21C4 */
-    if (self.repeatButton && repeat) {
-        unichar rc = 0x21BB;
-        if ([repeat isEqualToString:@"SINGLE"]) {
-            rc = 0x21BA;
-        } else if ([repeat isEqualToString:@"SHUFFLE"]) {
-            rc = 0x21C4;
-        }
-        NSString *rs = [NSString stringWithCharacters:&rc length:1];
-        [self.repeatButton setTitle:rs forState:0];
-        /* 非默认模式用主题色，一眼看出不是列表循环 */
-        BOOL nonDefault = ![repeat isEqualToString:@"QUEUE"];
-        [self.repeatButton setTitleColor:(nonDefault
-                                          ? MFCarPlayAccentColor()
-                                          : [UIColor colorWithRed:0.75 green:0.75 blue:0.78 alpha:1.0])
-                                forState:0];
-    }
-
-    /* 音质：在按钮下方用 title 无法表达，改用不同符号区分 */
-    if (self.qualityButton && quality) {
-        /* standard=♪  high=♫  super=♬ */
-        unichar qc = 0x266A;
-        if ([quality isEqualToString:@"high"]) {
-            qc = 0x266B;
-        } else if ([quality isEqualToString:@"super"] || [quality isEqualToString:@"lossless"]) {
-            qc = 0x266C;
-        }
-        NSString *qs = [NSString stringWithCharacters:&qc length:1];
-        [self.qualityButton setTitle:qs forState:0];
-    }
-
-    /* 4. 歌词高亮联动 */
-    self.currentProgress = cur;
+    /* 统一走 applyStateToUI，保证通知路径和轮询路径逻辑一致 */
+    [self applyStateToUI:state];
     [self refreshLyricHighlight];
-
-    /*
-     * ============ 11142669：切歌后刷新播放页 ============
-     *
-     * 用户反馈「切歌以后封面/歌词/名称不会跟着变」。
-     *
-     * 原问题：JS 推的状态里带 title，但这里只更新了进度和图标，
-     * 没有更新标题/封面。现在检测 title 变化，变了就整页刷新。
-     */
-    NSString *newTitle = [state[@"title"] isKindOfClass:[NSString class]]
-        ? state[@"title"] : nil;
-    if (newTitle.length > 0 &&
-        ![newTitle isEqualToString:self.lastRenderedTitle ?: @""]) {
-        [self refreshNowPlayingContent:state];
-    }
 }
 
 /*
@@ -4329,6 +4244,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
                             }
                             s.coverView.image = img;
                             s.backgroundImageView.image = img;
+                            MFCarPlayLogBoth(@"[TRACK] cover applied %lu bytes", (unsigned long)d.length);
                             MFCarPlayLogBoth(@"NOWPLAYING content refresh: %@ (cover %lu)",
                                   token.length > 0 ? @"with" : @"no",
                                   (unsigned long)d.length);
@@ -4350,6 +4266,19 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     [b setTitleColor:[UIColor whiteColor] forState:0];
     b.titleLabel.font = MFFont(26.0);
     b.backgroundColor = MFCarPlayCardColor();
+
+    /*
+     * ============ 11142674：播放键改圆角框 ============
+     *
+     * 用户要求 ◀◀ ▶ ▶▶ 也做成圆角框。
+     * 原来这个工厂函数没有设 cornerRadius，所以是直角矩形；
+     * 而功能键（♡ ↻）用的 makeSmallButton 有 8pt 圆角。
+     *
+     * 现在统一成 10pt 圆角，和卡片列表、功能键风格一致。
+     */
+    b.layer.cornerRadius = MFS(10.0);
+    b.layer.masksToBounds = YES;
+
     b.translatesAutoresizingMaskIntoConstraints = NO;
     [b addTarget:self action:action forControlEvents:64];  /* touchUpInside */
     [self.view addSubview:b];
@@ -4374,26 +4303,44 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     [b setTitleColor:[UIColor colorWithRed:0.75 green:0.75 blue:0.78 alpha:1.0] forState:0];
     b.titleLabel.font = MFFont(24.0);
     b.backgroundColor = MFCarPlayCardColor();
-    b.layer.cornerRadius = 8.0;
+    /* 11142674：和播放键统一 10pt 圆角 */
+    b.layer.cornerRadius = MFS(10.0);
+    b.layer.masksToBounds = YES;
     b.translatesAutoresizingMaskIntoConstraints = NO;
     [b addTarget:self action:action forControlEvents:64];
     return b;
 }
 
 - (void)onFavorite {
-    MFCarPlayLogBoth(@"NOWPLAYING tap FAVORITE");
+    MFCarPlayLogBoth(@"[ACTION] favorite tapped (current title=%, fav=%d)");
     [MFCarPlayBridge emitControl:@"favorite"];
+    /* 点击后 1 秒打印结果，验证状态是否变化 */
+    __weak __typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        __strong __typeof(weakSelf) s = weakSelf;
+        if (s && s.favoriteButton) {
+            MFCarPlayLogBoth(@"[ACTION] favorite btn now = '%@'",
+                  s.favoriteButton.titleLabel.text ?: @"?");
+        }
+    });
 }
 
 - (void)onRepeat {
-    MFCarPlayLogBoth(@"NOWPLAYING tap REPEAT");
+    MFCarPlayLogBoth(@"[ACTION] repeat tapped");
     [MFCarPlayBridge emitControl:@"repeat"];
+    __weak __typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        __strong __typeof(weakSelf) s = weakSelf;
+        if (s && s.repeatButton) {
+            MFCarPlayLogBoth(@"[ACTION] repeat btn now = '%@'",
+                  s.repeatButton.titleLabel.text ?: @"?");
+        }
+    });
 }
 
-- (void)onQuality {
-    MFCarPlayLogBoth(@"NOWPLAYING tap QUALITY");
-    [MFCarPlayBridge emitControl:@"quality"];
-}
+/* 11142673：onQuality 已移除 */
 
 - (void)onPrev {
     MFCarPlayLogBoth(@"NOWPLAYING tap PREV");
@@ -4401,8 +4348,18 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 }
 
 - (void)onPlayPause {
-    MFCarPlayLogBoth(@"NOWPLAYING tap PLAY/PAUSE");
+    NSString *cur = self.playPauseButton.titleLabel.text ?: @"?";
+    MFCarPlayLogBoth(@"[ACTION] play/pause tapped (btn=%@)", cur);
     [MFCarPlayBridge emitControl:@"toggle"];
+    __weak __typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        __strong __typeof(weakSelf) s = weakSelf;
+        if (s && s.playPauseButton) {
+            MFCarPlayLogBoth(@"[ACTION] play/pause btn now = '%@'",
+                  s.playPauseButton.titleLabel.text ?: @"?");
+        }
+    });
 }
 
 - (void)onNext {
@@ -4450,65 +4407,199 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
 /* 11142669：轮询一次（读 MMKV 的 progress） */
 - (void)pollProgressOnce {
+    /* 11142675：每 10 秒确认轮询还活着（排查「突然不动」） */
+    static int sPollCount = 0;
+    sPollCount++;
+    if (sPollCount % 10 == 1) {
+        MFCarPlayLogBoth(@"[POLL] tick #%d showingLyric=%d lyricLines=%lu",
+              sPollCount, (int)self.showingLyric,
+              (unsigned long)self.lyricLines.count);
+    }
     /*
-     * ============ 11142671：轮询只在 JS 不推时启用 ============
+     * ============ 11142672：不再依赖通知，直接读桥 ============
      *
-     * 日志发现严重问题：
-     *   BRIDGE state: ... pos=35.215479046/285.628...   <- JS 值正确
-     *   nowPlaying: ... progress=1.690546428662761e-52  <- MMKV 值乱码
+     * 日志证据：
+     *   BRIDGE state: 152 次    <- 桥确实收到 JS 数据
+     *   NOWPLAYING state: 0 次   <- 播放页一次都没收到通知
      *
-     * 我的轮询每秒读 MMKV（乱码值）并覆盖 JS 的正确进度，
-     * 导致进度条永远不动。
+     * 说明 NSNotification 没送达（原因待查），
+     * 但桥里的 nowPlayingStateData 是有的。
      *
-     * 修法：记录最后一次 JS 推送时间，2 秒内收到过就不轮询。
+     * 所以改成：每秒主动向桥拉取最新状态，直接更新 UI。
+     * 这比等通知可靠 —— 不依赖通知中心，不依赖线程。
      */
-    if (self.lastJSStateTime > 0 &&
-        [NSDate timeIntervalSinceReferenceDate] - self.lastJSStateTime < 2.0) {
-        return;   /* JS 在正常工作，不要覆盖 */
+    MFCarPlayBridge *bridge = [MFCarPlayBridge shared];
+    if (!bridge) {
+        return;
+    }
+    NSDictionary *st = [bridge nowPlayingState];
+    if (![st isKindOfClass:[NSDictionary class]] || st.count == 0) {
+        return;
     }
 
-    @try {
-        NSDictionary *np = MFCarPlayNativeNowPlaying();
-        if (![np isKindOfClass:[NSDictionary class]]) {
-            return;
-        }
-        NSNumber *prog = [np[@"progress"] isKindOfClass:[NSNumber class]] ? np[@"progress"] : nil;
-        NSNumber *dur = [np[@"duration"] isKindOfClass:[NSNumber class]] ? np[@"duration"] : nil;
-        if (!prog) {
-            return;
-        }
-        double cur = prog.doubleValue;
-        double total = dur ? dur.doubleValue : 0;
+    /* 直接用桥的数据更新 UI（复用同一个处理函数） */
+    [self applyStateToUI:st];
 
-        /*
-         * 11142671：过滤垃圾值。
-         * 日志里出现过 progress=1.69e-52 这种，
-         * 明显是内存未初始化的数据，必须排除。
-         */
-        if (cur < 0 || cur > total + 1 || total <= 0) {
-            return;
-        }
+    /*
+     * ============ 11142674：歌词也走轮询 ============
+     *
+     * 严重问题：handleLyricUpdate 只靠 NSNotification，
+     * 但日志证明通知收不到（NOWPLAYING state: 0 次）。
+     * 所以切歌后歌词永远不更新。
+     *
+     * 修法：轮询时也读桥里的歌词，行数变了就重载表格。
+     */
+    [self pollLyricFromBridge];
 
-        /* 进度没变就不刷 */
-        if (fabs(cur - self.currentProgress) < 0.5) {
-            return;
-        }
-        self.currentProgress = cur;
+    /* 刷新歌词高亮 */
+    [self refreshLyricHighlight];
+}
 
-        if (self.progressView && total > 0) {
+/*
+ * 11142674：从桥轮询歌词。
+ * 和进度一样，绕开通知机制。
+ */
+- (void)pollLyricFromBridge {
+    MFCarPlayBridge *bridge = [MFCarPlayBridge shared];
+    if (!bridge) {
+        return;
+    }
+    NSArray *lines = [bridge lyric];
+    if (![lines isKindOfClass:[NSArray class]]) {
+        return;
+    }
+
+    /* 行数没变就不动（避免每秒 reloadData） */
+    if (lines.count == self.lyricLines.count) {
+        return;
+    }
+
+    MFCarPlayLogBoth(@"[LYRIC] poll: %lu -> %lu lines",
+          (unsigned long)self.lyricLines.count, (unsigned long)lines.count);
+
+    self.lyricLines = lines;
+    self.currentLyricIndex = -1;
+
+    if (self.lyricTable && self.showingLyric) {
+        [self.lyricTable reloadData];
+        MFCarPlayLogBoth(@"[LYRIC] table reloaded: %lu lines", (unsigned long)lines.count);
+    }
+}
+
+/*
+ * 11142672：把状态字典应用到 UI。
+ * handleNowPlayingState: 和 pollProgressOnce 共用这一套逻辑，
+ * 避免两处代码不一致。
+ */
+- (void)applyStateToUI:(NSDictionary *)state {
+    if (![state isKindOfClass:[NSDictionary class]]) {
+        return;
+    }
+
+    /* 11142675：记录收到的状态（每 5 次一次，避免刷屏） */
+    static int sApplyCount = 0;
+    if (sApplyCount++ % 5 == 0) {
+        MFCarPlayLogBoth(@"[STATE] apply #%d title=%@ pos=%@/%@ playing=%@ fav=%@ rep=%@",
+              sApplyCount,
+              state[@"title"] ?: @"-",
+              state[@"progress"] ?: @"-",
+              state[@"duration"] ?: @"-",
+              state[@"isPlaying"] ?: @"-",
+              state[@"isFavorite"] ?: @"-",
+              state[@"repeatMode"] ?: @"-");
+    }
+
+    NSNumber *prog = [state[@"progress"] isKindOfClass:[NSNumber class]]
+        ? state[@"progress"] : nil;
+    NSNumber *dur = [state[@"duration"] isKindOfClass:[NSNumber class]]
+        ? state[@"duration"] : nil;
+    NSNumber *isPlaying = [state[@"isPlaying"] isKindOfClass:[NSNumber class]]
+        ? state[@"isPlaying"] : nil;
+
+    double cur = prog ? prog.doubleValue : 0;
+    double total = dur ? dur.doubleValue : 0;
+
+    /* 过滤非法值（日志里出现过 1.69e-52 这种垃圾数据） */
+    if (cur < 0) {
+        cur = 0;
+    }
+    if (total < 0) {
+        total = 0;
+    }
+
+    /* 进度条 */
+    if (self.progressView) {
+        if (total > 0) {
             double ratio = cur / total;
             if (ratio < 0) ratio = 0;
             if (ratio > 1) ratio = 1;
             [self.progressView setProgress:ratio animated:YES];
         }
-        if (self.timeLabel && total > 0) {
-            self.timeLabel.text = [NSString stringWithFormat:@"%@   /   %@",
-                                   [self formatTime:cur],
-                                   [self formatTime:total]];
+    }
+
+    /* 时间文字 */
+    if (self.timeLabel && total > 0) {
+        self.timeLabel.text = [NSString stringWithFormat:@"%@   /   %@",
+                               [self formatTime:cur],
+                               [self formatTime:total]];
+    }
+
+    /* 播放/暂停图标 */
+    if (isPlaying && self.playPauseButton) {
+        unichar code = isPlaying.boolValue ? 0x23F8 : 0x25B6;
+        NSString *sym = [NSString stringWithCharacters:&code length:1];
+        [self.playPauseButton setTitle:sym forState:0];
+    }
+
+    /* 爱心 */
+    NSNumber *fav = [state[@"isFavorite"] isKindOfClass:[NSNumber class]]
+        ? state[@"isFavorite"] : nil;
+    if (self.favoriteButton && fav) {
+        unichar hc = fav.boolValue ? 0x2665 : 0x2661;
+        NSString *hs = [NSString stringWithCharacters:&hc length:1];
+        [self.favoriteButton setTitle:hs forState:0];
+        [self.favoriteButton setTitleColor:(fav.boolValue
+            ? MFCarPlayAccentColor()
+            : [UIColor colorWithRed:0.75 green:0.75 blue:0.78 alpha:1.0])
+                                  forState:0];
+    }
+
+    /* 循环 */
+    NSString *repeat = [state[@"repeatMode"] isKindOfClass:[NSString class]]
+        ? state[@"repeatMode"] : nil;
+    if (self.repeatButton && repeat) {
+        /*
+         * 11142673：图标按用户要求换成
+         *   QUEUE   -> U+21BB  列表循环 ↻
+         *   SINGLE  -> U+2460  单曲循环 ①
+         *   SHUFFLE -> U+2928  随机 ⤨
+         */
+        unichar rc = 0x21BB;
+        if ([repeat isEqualToString:@"SINGLE"]) {
+            rc = 0x2460;   /* ① 单曲循环 */
+        } else if ([repeat isEqualToString:@"SHUFFLE"]) {
+            rc = 0x2928;   /* ⤨ 随机 */
         }
-        [self refreshLyricHighlight];
-    } @catch (NSException *e) {
-        MFCarPlayLogBoth(@"pollProgress threw: %@", e.reason);
+        NSString *rs = [NSString stringWithCharacters:&rc length:1];
+        [self.repeatButton setTitle:rs forState:0];
+        BOOL nonDefault = ![repeat isEqualToString:@"QUEUE"];
+        [self.repeatButton setTitleColor:(nonDefault
+            ? MFCarPlayAccentColor()
+            : [UIColor colorWithRed:0.75 green:0.75 blue:0.78 alpha:1.0])
+                                forState:0];
+    }
+
+    /* 11142673：音质按钮已移除，不再处理 quality 字段 */
+
+    /* 记录进度 + 检测切歌 */
+    self.currentProgress = cur;
+    NSString *newTitle = [state[@"title"] isKindOfClass:[NSString class]]
+        ? state[@"title"] : nil;
+    if (newTitle.length > 0 &&
+        ![newTitle isEqualToString:self.lastRenderedTitle ?: @""]) {
+        MFCarPlayLogBoth(@"[TRACK] changed: '%@' -> '%@'",
+              self.lastRenderedTitle ?: @"(none)", newTitle);
+        [self refreshNowPlayingContent:state];
     }
 }
 
@@ -4537,7 +4628,8 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
                                                    style:UITableViewStylePlain];
     tb.dataSource = self;
     tb.delegate = self;
-    tb.rowHeight = MFS(46.0);
+    /* 11142672：歌词行高加大，车机屏上更好读 */
+    tb.rowHeight = MFS(52.0);
     tb.backgroundColor = [UIColor clearColor];      /* 透出背景图 */
     tb.separatorColor = [UIColor clearColor];
     tb.showsVerticalScrollIndicator = NO;
@@ -4548,11 +4640,15 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
     /* 与封面同一位置，稍宽一点（歌词行更长） */
     [NSLayoutConstraint activateConstraints:@[
-        [tb.topAnchor constraintEqualToAnchor:self.coverView.topAnchor],
-        [tb.bottomAnchor constraintEqualToAnchor:self.coverView.bottomAnchor],
-        /* 11142671：歌词区左右对称，保证居中 */
-        [tb.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:40],
-        [tb.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-40],
+        /*
+         * 11142672：歌词区域加高。
+         * 原来和封面同高（168），只能显示 3 行。
+         * 改为延伸到按钮行上方，约 300px，能显示 5-6 行。
+         */
+        [tb.topAnchor constraintEqualToAnchor:self.coverView.topAnchor constant:-MFS(10)],
+        [tb.bottomAnchor constraintEqualToAnchor:self.progressView.topAnchor constant:-MFS(6)],
+        [tb.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:MFS(60)],
+        [tb.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-MFS(60)],
     ]];
 
     /* 加载当前歌词 */

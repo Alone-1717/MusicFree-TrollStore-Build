@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142671"
+EXPECTED_VERSION = "11142675"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -151,6 +151,17 @@ BINARY_MARKERS = [
     b"LYRIC scroll to row %ld",
     b"LYRIC skip: not showing",
     b"LYRIC skip: 0 lines",
+    b"[POLL] tick #%d",
+    b"[STATE] apply #%d",
+    b"[TRACK] changed:",
+    b"[TRACK] cover applied",
+    b"[LYRIC] poll:",
+    b"[LYRIC] table reloaded",
+    b"[ACTION] favorite tapped",
+    b"[ACTION] repeat tapped",
+    b"[ACTION] play/pause tapped",
+    b"[KEYBOARD] letter",
+    b"[KEYBOARD] hidden by bg tap",
 ]
 
 # 旧版已证伪/致命的标记，产物里绝不能再出现
