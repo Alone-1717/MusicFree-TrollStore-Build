@@ -246,6 +246,74 @@ static void MFSafeReload(UITableView *tv, NSString *tag) {
     }
 }
 
+/*
+ * ============ 11142666：自适应缩放 ============
+ *
+ * 问题：之前所有尺寸都是硬编码（220 封面、76 行高、19 号字…），
+ * 在你 1066x480 的车机上刚好，换个 800x480 或 1280x720 的屏幕就错位。
+ *
+ * 方案：以 1066x480（横向）为基准，按屏幕实际尺寸算缩放系数。
+ *
+ *   scaleW = 实际宽 / 1066
+ *   scaleH = 实际高 / 480
+ *   scale  = min(scaleW, scaleH)     取小的，保证不溢出
+ *
+ * 然后把 scale 夹到 [0.75, 1.6] 之间：
+ *   - 太小（< 0.75）字会看不清
+ *   - 太大（> 1.6）布局会撑破
+ *
+ * 用函数而不是宏，方便调试时打日志。
+ */
+
+/* 基准尺寸（我们一开始按这个调的） */
+static const CGFloat kMFBaseWidth = 1066.0;
+static const CGFloat kMFBaseHeight = 480.0;
+
+/* 当前界面的缩放系数（每个 VC 在 viewDidLayoutSubviews 里刷新） */
+static CGFloat sMFScale = 1.0;
+static CGSize sMFScreenSize = {1066.0, 480.0};
+
+/* 根据屏幕尺寸计算并缓存缩放系数 */
+static CGFloat MFScaleForSize(CGSize size) {
+    if (size.width <= 0 || size.height <= 0) {
+        return 1.0;
+    }
+    sMFScreenSize = size;
+    CGFloat sw = size.width / kMFBaseWidth;
+    CGFloat sh = size.height / kMFBaseHeight;
+    CGFloat s = sw < sh ? sw : sh;
+
+    /* 夹逼，避免极端值 */
+    if (s < 0.75) {
+        s = 0.75;
+    }
+    if (s > 1.6) {
+        s = 1.6;
+    }
+    sMFScale = s;
+    return s;
+}
+
+/* 读当前缩放系数（未初始化则 1.0） */
+static CGFloat MFScale(void) {
+    return sMFScale;
+}
+
+/* 按比例缩放一个数值 */
+static CGFloat MFS(CGFloat v) {
+    return v * sMFScale;
+}
+
+/* 按比例缩放字体（字号跟着变，但保留最小可读值） */
+static UIFont *MFFont(CGFloat size) {
+    CGFloat scaled = size * sMFScale;
+    /* 车机上最小 13pt，再小看不清 */
+    if (scaled < 13.0) {
+        scaled = 13.0;
+    }
+    return [UIFont systemFontOfSize:scaled];
+}
+
 static NSDictionary *MFNowPlayingFromTrack(NSDictionary *track) {
     if (![track isKindOfClass:[NSDictionary class]]) {
         return nil;
@@ -292,7 +360,7 @@ static void MFAddBackButton(UIViewController *vc) {
     UIButton *b = [UIButton buttonWithType:0];
     [b setTitle:@"\u2190 \u8fd4\u56de" forState:0];   /* ← 返回 */
     [b setTitleColor:MFCarPlayAccentColor() forState:0];
-    b.titleLabel.font = [UIFont systemFontOfSize:19.0];
+    b.titleLabel.font = MFFont(19.0);
     b.translatesAutoresizingMaskIntoConstraints = NO;
     [b addTarget:vc action:@selector(onBack) forControlEvents:64];
     [vc.view addSubview:b];
@@ -312,8 +380,8 @@ static void MFAddBackButton(UIViewController *vc) {
     [NSLayoutConstraint activateConstraints:@[
         [b.topAnchor constraintEqualToAnchor:vc.view.topAnchor constant:14],
         [b.leadingAnchor constraintEqualToAnchor:vc.view.leadingAnchor constant:34],
-        [b.widthAnchor constraintEqualToConstant:120],
-        [b.heightAnchor constraintEqualToConstant:44],
+        [b.widthAnchor constraintEqualToConstant:MFS(120)],
+        [b.heightAnchor constraintEqualToConstant:MFS(44)],
     ]];
 
     /* 关键：表格是后加的，必须把按钮提上来 */
@@ -329,7 +397,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     }
     UILabel *l = [[UILabel alloc] init];
     l.text = title;
-    l.font = [UIFont systemFontOfSize:19.0];
+    l.font = MFFont(19.0);
     l.textColor = [UIColor whiteColor];
     l.textAlignment = NSTextAlignmentCenter;
     l.translatesAutoresizingMaskIntoConstraints = NO;
@@ -339,7 +407,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         [l.centerXAnchor constraintEqualToAnchor:vc.view.centerXAnchor],
         [l.leadingAnchor constraintGreaterThanOrEqualToAnchor:vc.view.leadingAnchor constant:160],
         [l.trailingAnchor constraintLessThanOrEqualToAnchor:vc.view.trailingAnchor constant:-20],
-        [l.heightAnchor constraintEqualToConstant:44],
+        [l.heightAnchor constraintEqualToConstant:MFS(44)],
     ]];
     [vc.view bringSubviewToFront:l];
 }
@@ -401,7 +469,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         @[@"Z", @"X", @"C", @"V", @"B", @"N", @"M"],
     ];
 
-    UIFont *keyFont = [UIFont systemFontOfSize:22.0];
+    UIFont *keyFont = MFFont(22.0);
     UIColor *keyBg = [UIColor colorWithRed:0.25 green:0.25 blue:0.27 alpha:1.0];
 
     UIView *prevRow = nil;
@@ -425,7 +493,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
             [NSLayoutConstraint activateConstraints:@[
                 [k.topAnchor constraintEqualToAnchor:row.topAnchor],
                 [k.bottomAnchor constraintEqualToAnchor:row.bottomAnchor],
-                [k.widthAnchor constraintEqualToConstant:88],
+                [k.widthAnchor constraintEqualToConstant:MFS(88)],
             ]];
             if (prevKey) {
                 [NSLayoutConstraint activateConstraints:@[[k.leadingAnchor constraintEqualToAnchor:prevKey.trailingAnchor constant:8]]];
@@ -441,7 +509,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         [NSLayoutConstraint activateConstraints:@[
             [row.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:8],
             [row.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-8],
-            [row.heightAnchor constraintEqualToConstant:46],
+            [row.heightAnchor constraintEqualToConstant:MFS(46)],
         ]];
         if (prevRow) {
             [NSLayoutConstraint activateConstraints:@[[row.topAnchor constraintEqualToAnchor:prevRow.bottomAnchor constant:8]]];
@@ -468,18 +536,18 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     }
     [NSLayoutConstraint activateConstraints:@[
         [del.leadingAnchor constraintEqualToAnchor:funcRow.leadingAnchor],
-        [del.widthAnchor constraintEqualToConstant:150],
+        [del.widthAnchor constraintEqualToConstant:MFS(150)],
 
         [space.leadingAnchor constraintEqualToAnchor:del.trailingAnchor constant:8],
         [space.trailingAnchor constraintEqualToAnchor:clr.leadingAnchor constant:-8],
-        [space.widthAnchor constraintGreaterThanOrEqualToConstant:200],
+        [space.widthAnchor constraintGreaterThanOrEqualToConstant:MFS(200)],
 
         [clr.trailingAnchor constraintEqualToAnchor:funcRow.trailingAnchor],
-        [clr.widthAnchor constraintEqualToConstant:150],
+        [clr.widthAnchor constraintEqualToConstant:MFS(150)],
 
         [funcRow.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:8],
         [funcRow.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-8],
-        [funcRow.heightAnchor constraintEqualToConstant:46],
+        [funcRow.heightAnchor constraintEqualToConstant:MFS(46)],
         [funcRow.topAnchor constraintEqualToAnchor:prevRow.bottomAnchor constant:8],
         [funcRow.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-8],
     ]];
@@ -491,7 +559,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     UIButton *b = [UIButton buttonWithType:0];
     [b setTitle:title forState:0];
     [b setTitleColor:[UIColor whiteColor] forState:0];
-    b.titleLabel.font = [UIFont systemFontOfSize:20.0];
+    b.titleLabel.font = MFFont(20.0);
     b.backgroundColor = [UIColor colorWithRed:0.30 green:0.30 blue:0.33 alpha:1.0];
     b.layer.cornerRadius = 6.0;
     b.translatesAutoresizingMaskIntoConstraints = NO;
@@ -591,7 +659,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     /* 卡片容器 */
     self.cardView = [[UIView alloc] init];
     self.cardView.backgroundColor = MFCarPlayCardColor();
-    self.cardView.layer.cornerRadius = 10.0;
+    self.cardView.layer.cornerRadius = MFS(10.0);
     self.cardView.layer.masksToBounds = YES;
     self.cardView.translatesAutoresizingMaskIntoConstraints = NO;
     [self.contentView addSubview:self.cardView];
@@ -600,21 +668,21 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     self.coverView = [[UIImageView alloc] init];
     self.coverView.contentMode = UIViewContentModeScaleAspectFill;
     self.coverView.backgroundColor = [UIColor colorWithRed:0.24 green:0.24 blue:0.26 alpha:1.0];
-    self.coverView.layer.cornerRadius = 5.0;
+    self.coverView.layer.cornerRadius = MFS(5.0);
     self.coverView.layer.masksToBounds = YES;
     self.coverView.translatesAutoresizingMaskIntoConstraints = NO;
     [self.cardView addSubview:self.coverView];
 
     /* 主标题 */
     self.mainLabel = [[UILabel alloc] init];
-    self.mainLabel.font = [UIFont systemFontOfSize:19.0];
+    self.mainLabel.font = MFFont(19.0);
     self.mainLabel.textColor = [UIColor whiteColor];
     self.mainLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [self.cardView addSubview:self.mainLabel];
 
     /* 副标题 */
     self.subLabel = [[UILabel alloc] init];
-    self.subLabel.font = [UIFont systemFontOfSize:15.0];
+    self.subLabel.font = MFFont(15.0);
     self.subLabel.textColor = [UIColor colorWithRed:0.72 green:0.72 blue:0.74 alpha:1.0];
     self.subLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [self.cardView addSubview:self.subLabel];
@@ -630,8 +698,8 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         /* 封面：卡片内左 12，垂直居中，40x40 */
         [self.coverView.leadingAnchor constraintEqualToAnchor:self.cardView.leadingAnchor constant:12],
         [self.coverView.centerYAnchor constraintEqualToAnchor:self.cardView.centerYAnchor],
-        [self.coverView.widthAnchor constraintEqualToConstant:40],
-        [self.coverView.heightAnchor constraintEqualToConstant:40],
+        [self.coverView.widthAnchor constraintEqualToConstant:MFS(40)],
+        [self.coverView.heightAnchor constraintEqualToConstant:MFS(40)],
 
         /* 主标题 */
         [self.mainLabel.leadingAnchor constraintEqualToAnchor:self.coverView.trailingAnchor constant:12],
@@ -780,6 +848,11 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 - (void)viewDidLoad {
     [super viewDidLoad];
 
+    /* 11142666：先算缩放系数（车机屏幕尺寸各异） */
+    CGFloat sc = MFScaleForSize(self.view.bounds.size);
+    MFCarPlayLogBoth(@"ROOT layout: screen=%.0fx%.0f scale=%.2f",
+          self.view.bounds.size.width, self.view.bounds.size.height, sc);
+
     self.view.backgroundColor = MFCarPlayBackgroundColor();
     self.selectedTab = 0;
 
@@ -798,7 +871,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     for (NSUInteger i = 0; i < titles.count; i++) {
         UIButton *b = [UIButton buttonWithType:0];
         [b setTitle:titles[i] forState:0];
-        b.titleLabel.font = [UIFont systemFontOfSize:22.0];
+        b.titleLabel.font = MFFont(22.0);
         b.tag = (NSInteger)i;
         b.translatesAutoresizingMaskIntoConstraints = NO;
         [b addTarget:self action:@selector(onTabTap:) forControlEvents:64];
@@ -812,7 +885,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
                                               style:UITableViewStylePlain];
     self.table.dataSource = self;
     self.table.delegate = self;
-    self.table.rowHeight = 76.0;
+    self.table.rowHeight = MFS(76.0);
     /* 表格透明，让卡片间隙透出页面背景 */
     self.table.backgroundColor = [UIColor clearColor];
     /*
@@ -860,7 +933,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     [cons addObject:[self.tabBar.topAnchor constraintEqualToAnchor:v.topAnchor constant:6]];
     [cons addObject:[self.tabBar.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:16]];
     [cons addObject:[self.tabBar.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-16]];
-    [cons addObject:[self.tabBar.heightAnchor constraintEqualToConstant:56]];
+    [cons addObject:[self.tabBar.heightAnchor constraintEqualToConstant:MFS(56)]];
 
     /* 三个 tab 按钮等分横向 */
     UIButton *prev = nil;
@@ -898,7 +971,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     [cons addObject:[self.searchField.topAnchor constraintEqualToAnchor:self.tabBar.bottomAnchor constant:6]];
     [cons addObject:[self.searchField.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:60]];
     [cons addObject:[self.searchField.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-100]];
-    [cons addObject:[self.searchField.heightAnchor constraintEqualToConstant:48]];
+    [cons addObject:[self.searchField.heightAnchor constraintEqualToConstant:MFS(48)]];
 
     /* 表格始终从 tabBar 下方开始（搜索框浮在其上，不挤占布局） */
     [cons addObject:[self.table.topAnchor constraintEqualToAnchor:self.tabBar.bottomAnchor constant:8]];
@@ -1111,7 +1184,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
             [kb.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
             [kb.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
             [kb.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor constant:-12],
-            [kb.heightAnchor constraintEqualToConstant:230],
+            [kb.heightAnchor constraintEqualToConstant:MFS(230)],
         ]];
         [self.view bringSubviewToFront:kb];
     }
@@ -1383,11 +1456,10 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
 
 - (void)viewDidLoad {
-    MFAddBackButton(self);
-    /* 11142654：顶部居中标题（歌单名），对齐用户图五 */
-    MFAddTopTitle(self, self.sheetTitle);
-    MFAddBackButton(self);
     [super viewDidLoad];
+
+    /* 11142666：算缩放系数 */
+    MFScaleForSize(self.view.bounds.size);
 
     self.title = self.sheetTitle ?: @"曲目";
     self.view.backgroundColor = MFCarPlayBackgroundColor();
@@ -1396,7 +1468,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
                                               style:UITableViewStylePlain];
     self.table.dataSource = self;
     self.table.delegate = self;
-    self.table.rowHeight = 76.0;
+    self.table.rowHeight = MFS(76.0);
     /* 表格透明，让卡片间隙透出页面背景 */
     self.table.backgroundColor = [UIColor clearColor];
     /*
@@ -1417,6 +1489,10 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
     MFCarPlayLogBoth(@"TRACKS VC: sheet=%@ title=%@ tracks=%lu",
           self.sheetId, self.sheetTitle, (unsigned long)self.tracks.count);
+
+    /* 11142666：标题和返回按钮放最后加，保证在最上层 */
+    MFAddTopTitle(self, self.sheetTitle);
+    MFAddBackButton(self);
 }
 
 #pragma mark UITableViewDataSource
@@ -3390,6 +3466,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    MFScaleForSize(self.view.bounds.size);
     self.view.backgroundColor = MFCarPlayBackgroundColor();
     self.tracks = @[];
 
@@ -3398,7 +3475,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
                                               style:UITableViewStylePlain];
     self.table.dataSource = self;
     self.table.delegate = self;
-    self.table.rowHeight = 76.0;
+    self.table.rowHeight = MFS(76.0);
     self.table.backgroundColor = [UIColor clearColor];
     self.table.separatorStyle = UITableViewCellSeparatorStyleNone;
     self.table.translatesAutoresizingMaskIntoConstraints = NO;
@@ -3515,6 +3592,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    MFScaleForSize(self.view.bounds.size);
 
     self.title = @"";
     self.view.backgroundColor = MFCarPlayBackgroundColor();
@@ -3576,7 +3654,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     /* 歌名 */
     self.titleLabel = [[UILabel alloc] init];
     self.titleLabel.text = title;
-    self.titleLabel.font = [UIFont systemFontOfSize:30.0];
+    self.titleLabel.font = MFFont(30.0);
     self.titleLabel.textColor = [UIColor whiteColor];
     self.titleLabel.textAlignment = NSTextAlignmentCenter;
     self.titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
@@ -3585,7 +3663,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     /* 歌手/专辑 */
     self.artistLabel = [[UILabel alloc] init];
     self.artistLabel.text = subtitle;
-    self.artistLabel.font = [UIFont systemFontOfSize:20.0];
+    self.artistLabel.font = MFFont(20.0);
     self.artistLabel.textColor = [UIColor whiteColor];
     self.artistLabel.textAlignment = NSTextAlignmentCenter;
     self.artistLabel.translatesAutoresizingMaskIntoConstraints = NO;
@@ -3649,7 +3727,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     self.timeLabel = [[UILabel alloc] init];
     self.timeLabel.text = [NSString stringWithFormat:@"%@   /   %@",
                            [self formatTime:progress], [self formatTime:duration]];
-    self.timeLabel.font = [UIFont systemFontOfSize:18.0];
+    self.timeLabel.font = MFFont(18.0);
     self.timeLabel.textColor = [UIColor whiteColor];
     self.timeLabel.textAlignment = NSTextAlignmentCenter;
     self.timeLabel.translatesAutoresizingMaskIntoConstraints = NO;
@@ -3693,18 +3771,18 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         /* 三个按钮：进度条下方，右对齐 */
         [self.qualityButton.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-40],
         [self.qualityButton.topAnchor constraintEqualToAnchor:self.progressView.bottomAnchor constant:10],
-        [self.qualityButton.widthAnchor constraintEqualToConstant:56],
-        [self.qualityButton.heightAnchor constraintEqualToConstant:44],
+        [self.qualityButton.widthAnchor constraintEqualToConstant:MFS(56)],
+        [self.qualityButton.heightAnchor constraintEqualToConstant:MFS(44)],
 
         [self.repeatButton.trailingAnchor constraintEqualToAnchor:self.qualityButton.leadingAnchor constant:-16],
         [self.repeatButton.centerYAnchor constraintEqualToAnchor:self.qualityButton.centerYAnchor],
-        [self.repeatButton.widthAnchor constraintEqualToConstant:56],
-        [self.repeatButton.heightAnchor constraintEqualToConstant:44],
+        [self.repeatButton.widthAnchor constraintEqualToConstant:MFS(56)],
+        [self.repeatButton.heightAnchor constraintEqualToConstant:MFS(44)],
 
         [self.favoriteButton.trailingAnchor constraintEqualToAnchor:self.repeatButton.leadingAnchor constant:-16],
         [self.favoriteButton.centerYAnchor constraintEqualToAnchor:self.qualityButton.centerYAnchor],
-        [self.favoriteButton.widthAnchor constraintEqualToConstant:56],
-        [self.favoriteButton.heightAnchor constraintEqualToConstant:44],
+        [self.favoriteButton.widthAnchor constraintEqualToConstant:MFS(56)],
+        [self.favoriteButton.heightAnchor constraintEqualToConstant:MFS(44)],
     ]];
 
     /* 布局：1016 宽的车机屏幕，居中排布 */
@@ -3723,30 +3801,30 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         /* 封面：居中，220x220 */
         [self.coverView.topAnchor constraintEqualToAnchor:self.artistLabel.bottomAnchor constant:24],
         [self.coverView.centerXAnchor constraintEqualToAnchor:v.centerXAnchor],
-        [self.coverView.widthAnchor constraintEqualToConstant:220],
-        [self.coverView.heightAnchor constraintEqualToConstant:220],
+        [self.coverView.widthAnchor constraintEqualToConstant:MFS(220)],
+        [self.coverView.heightAnchor constraintEqualToConstant:MFS(220)],
 
         /* 上一首 / 播放 / 下一首：底部横排 */
         [play.centerXAnchor constraintEqualToAnchor:v.centerXAnchor],
         [play.topAnchor constraintEqualToAnchor:self.coverView.bottomAnchor constant:28],
-        [play.widthAnchor constraintEqualToConstant:120],
-        [play.heightAnchor constraintEqualToConstant:64],
+        [play.widthAnchor constraintEqualToConstant:MFS(120)],
+        [play.heightAnchor constraintEqualToConstant:MFS(64)],
 
         [prev.trailingAnchor constraintEqualToAnchor:play.leadingAnchor constant:-24],
         [prev.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
-        [prev.widthAnchor constraintEqualToConstant:110],
-        [prev.heightAnchor constraintEqualToConstant:64],
+        [prev.widthAnchor constraintEqualToConstant:MFS(110)],
+        [prev.heightAnchor constraintEqualToConstant:MFS(64)],
 
         [next.leadingAnchor constraintEqualToAnchor:play.trailingAnchor constant:24],
         [next.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
-        [next.widthAnchor constraintEqualToConstant:110],
-        [next.heightAnchor constraintEqualToConstant:64],
+        [next.widthAnchor constraintEqualToConstant:MFS(110)],
+        [next.heightAnchor constraintEqualToConstant:MFS(64)],
 
         /* 进度条：按钮下方，左右留边 */
         [self.progressView.topAnchor constraintEqualToAnchor:play.bottomAnchor constant:18],
         [self.progressView.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:40],
         [self.progressView.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-40],
-        [self.progressView.heightAnchor constraintEqualToConstant:4],
+        [self.progressView.heightAnchor constraintEqualToConstant:MFS(4)],
 
         /* 时间：进度条下方 */
         [self.timeLabel.topAnchor constraintEqualToAnchor:self.progressView.bottomAnchor constant:8],
@@ -3919,7 +3997,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     UIButton *b = [UIButton buttonWithType:0];
     [b setTitle:text forState:0];
     [b setTitleColor:[UIColor whiteColor] forState:0];
-    b.titleLabel.font = [UIFont systemFontOfSize:26.0];
+    b.titleLabel.font = MFFont(26.0);
     b.backgroundColor = MFCarPlayCardColor();
     b.translatesAutoresizingMaskIntoConstraints = NO;
     [b addTarget:self action:action forControlEvents:64];  /* touchUpInside */
@@ -3943,7 +4021,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     NSString *sym = [NSString stringWithCharacters:&code length:1];
     [b setTitle:sym forState:0];
     [b setTitleColor:[UIColor colorWithRed:0.75 green:0.75 blue:0.78 alpha:1.0] forState:0];
-    b.titleLabel.font = [UIFont systemFontOfSize:24.0];
+    b.titleLabel.font = MFFont(24.0);
     b.backgroundColor = MFCarPlayCardColor();
     b.layer.cornerRadius = 8.0;
     b.translatesAutoresizingMaskIntoConstraints = NO;
@@ -4024,7 +4102,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
                                                    style:UITableViewStylePlain];
     tb.dataSource = self;
     tb.delegate = self;
-    tb.rowHeight = 46.0;
+    tb.rowHeight = MFS(46.0);
     tb.backgroundColor = [UIColor clearColor];      /* 透出背景图 */
     tb.separatorColor = [UIColor clearColor];
     tb.showsVerticalScrollIndicator = NO;
