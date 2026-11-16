@@ -920,6 +920,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
  * 但能保证进度条和时间文字是活的。
  */
 @property (nonatomic, strong) NSTimer *progressPollTimer;
+
 /* 11142671：最后一次 JS 推送状态的时间，用于让轮询避让 */
 @property (nonatomic, assign) NSTimeInterval lastJSStateTime;
 /* 11142677：三个计数器改成实例级（原来 static 会跨实例共享） */
@@ -3916,6 +3917,9 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
 @end
 
+/* 11142681：GCD 轮询定时器（全局，避免 ObjC 属性类型问题） */
+static dispatch_source_t sGCDPollTimer = NULL;
+
 @implementation MFCarPlayWindowNowPlayingVC
 
 - (void)viewDidLoad {
@@ -4479,67 +4483,69 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
  */
 /* 11142669：启动进度轮询 */
 - (void)startProgressPoll {
+    /*
+     * 11142681：防重入。
+     * 既检查实例定时器，也检查全局 GCD 定时器，
+     * 避免播放页重建时产生多个重复定时器。
+     */
     if (self.progressPollTimer) {
         return;
     }
+    if (sGCDPollTimer) {
+        dispatch_source_cancel(sGCDPollTimer);
+        sGCDPollTimer = NULL;
+        MFCarPlayLogBoth(@"NOWPLAYING cancelled stale GCD timer");
+    }
+
     /*
-     * ============ 11142676：定时器闪退修复 ============
+     * ================================================================
+     * 11142681：改用 GCD 定时器（关键修复）
+     * ================================================================
      *
-     * 闪退原因分析：
-     *   播放页被 pop 后，如果定时器还没 invalidate，
-     *   下一次 tick 时 weakSelf 可能已经变成野指针。
+     * 日志事实：
+     *   "NOWPLAYING progress poll started" 有输出
+     *   但 [POLL] tick 一次都没有
      *
-     *   虽然用了 __weak，但 `s.view.window` 这一步仍可能
-     *   在对象正在析构（dealloc 执行中）时访问，导致崩溃。
+     * 说明 NSTimer 创建了但从未触发。
      *
-     * 修法：
-     *   1) 用 @try 包住整个回调，任何异常只记录不崩
-     *   2) 检查次序：先判 nil，再判 window，再判是否在导航栈
-     *   3) 定时器在 viewWillDisappear 也停（不只依赖 dealloc）
+     * 根因：scheduledTimerWithTimeInterval 会把定时器加到
+     * **当前线程的默认 RunLoop**。在 CarPlay 的 UIWindowScene
+     * 环境里，这个 runloop 可能不是主 runloop，或者处于
+     * 非 default mode，导致定时器永远不 fire。
+     *
+     * GCD 的 dispatch_source_t 不依赖 runloop，一定可靠。
      */
     __weak __typeof(self) weakSelf = self;
-    self.progressPollTimer = [NSTimer scheduledTimerWithTimeInterval:1.0
-                                                              repeats:YES
-                                                                block:^(NSTimer *timer) {
+    dispatch_queue_t q = dispatch_get_main_queue();
+    dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, q);
+    if (!timer) {
+        MFCarPlayLogBoth(@"[POLL] dispatch_source_create FAILED");
+        return;
+    }
+
+    /* 1 秒间隔，允许 0.1 秒误差（省电） */
+    dispatch_source_set_timer(timer,
+                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                              (uint64_t)(1.0 * NSEC_PER_SEC),
+                              (uint64_t)(0.1 * NSEC_PER_SEC));
+
+    dispatch_source_set_event_handler(timer, ^{
         @try {
             __strong __typeof(weakSelf) s = weakSelf;
             if (!s) {
-                [timer invalidate];
-                return;
-            }
-            /*
-             * ============ 11142679：放宽存活判定 ============
-             *
-             * 日志证据：[POLL] tick 只出现 1 次就没了，
-             * 说明 view.window 在第 2 次 tick 时变成 nil，
-             * 导致定时器被 invalidate。
-             *
-             * CarPlay 的 UIWindowScene 里 view.window 可能不稳定。
-             * 改用更可靠的判定：是否还有 navigationController 或 superview。
-             */
-            if (!s.view) {
-                [timer invalidate];
-                s.progressPollTimer = nil;
-                MFCarPlayLogBoth(@"[POLL] stopped: view gone");
-                return;
-            }
-            /* 只要还在导航栈里就继续（不依赖 window） */
-            BOOL inStack = (s.navigationController != nil) ||
-                           (s.view.superview != nil) ||
-                           (s.view.window != nil);
-            if (!inStack) {
-                [timer invalidate];
-                s.progressPollTimer = nil;
-                MFCarPlayLogBoth(@"[POLL] stopped: not in hierarchy");
+                dispatch_source_cancel(timer);
                 return;
             }
             [s pollProgressOnce];
         } @catch (NSException *e) {
-            MFCarPlayLogBoth(@"[POLL] EXCEPTION: %@ -- %@", e.name, e.reason);
-            [timer invalidate];
+            MFCarPlayLogBoth(@"[POLL] GCD timer EXCEPTION: %@ -- %@", e.name, e.reason);
         }
-    }];
-    MFCarPlayLogBoth(@"NOWPLAYING progress poll started");
+    });
+
+    dispatch_resume(timer);
+    sGCDPollTimer = timer;   /* 全局变量，避免属性类型问题 */
+
+    MFCarPlayLogBoth(@"NOWPLAYING progress poll started (GCD timer)");
 }
 
 /*
@@ -4550,6 +4556,10 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     if (self.progressPollTimer) {
         [self.progressPollTimer invalidate];
         self.progressPollTimer = nil;
+    }
+    if (sGCDPollTimer) {
+        dispatch_source_cancel(sGCDPollTimer);
+        sGCDPollTimer = NULL;
         MFCarPlayLogBoth(@"NOWPLAYING progress poll stopped (viewWillDisappear)");
     }
 }
@@ -5199,6 +5209,11 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     if (self.progressPollTimer) {
         [self.progressPollTimer invalidate];
         self.progressPollTimer = nil;
+    }
+    /* 11142681：取消 GCD 定时器 */
+    if (sGCDPollTimer) {
+        dispatch_source_cancel(sGCDPollTimer);
+        sGCDPollTimer = NULL;
     }
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     MFCarPlayLogBoth(@"NOWPLAYING dealloc");
