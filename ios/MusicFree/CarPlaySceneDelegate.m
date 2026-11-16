@@ -487,6 +487,56 @@ static void MFApplyPauseIcon(UIButton *btn) {
 /*
  * 11142699：绘制"播放"图标（三角形，同样不用 emoji）
  */
+/*
+ * ================================================================
+ * 11142708：「正在播放」声波图标
+ * ================================================================
+ * 参照网易云右上角：5 根竖条高低错落，代表音频波形。
+ * 不用 emoji，用 CAShapeLayer 自绘。
+ */
+static void MFApplyWaveIcon(UIButton *btn, BOOL active) {
+    if (!btn) {
+        return;
+    }
+    for (CALayer *l in [btn.layer.sublayers copy]) {
+        if ([l.name isEqualToString:@"mfWaveLayer"]) {
+            [l removeFromSuperlayer];
+        }
+    }
+    CGFloat w = btn.bounds.size.width;
+    CGFloat h = btn.bounds.size.height;
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+
+    /* 5 根竖条，高度比例错落 */
+    CGFloat ratios[5] = {0.34, 0.62, 1.00, 0.62, 0.34};
+    CGFloat barW = w * 0.10;
+    CGFloat gap = (w - barW * 5) / 6.0;
+    if (gap < 0.5) {
+        gap = 0.5;
+    }
+    CGFloat maxH = h * 0.56;
+    CGFloat cy = h / 2.0;
+
+    CAShapeLayer *layer = [CAShapeLayer layer];
+    layer.name = @"mfWaveLayer";
+    layer.fillColor = (active ? MFCarPlayAccentColor() : [UIColor whiteColor]).CGColor;
+
+    UIBezierPath *path = [UIBezierPath bezierPath];
+    for (int i = 0; i < 5; i++) {
+        CGFloat barH = maxH * ratios[i];
+        CGFloat x = gap + i * (barW + gap);
+        CGFloat y = cy - barH / 2.0;
+        CGFloat radius = barW * 0.42;
+        UIBezierPath *bar = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(x, y, barW, barH)
+                                                          cornerRadius:radius];
+        [path appendPath:bar];
+    }
+    layer.path = path.CGPath;
+    [btn.layer addSublayer:layer];
+}
+
 static void MFApplyPlayIcon(UIButton *btn) {
     if (!btn) {
         return;
@@ -1057,6 +1107,8 @@ static void MFInstallCrashHandler(void) {
 @property (nonatomic, strong) UIView *tabBar;
 @property (nonatomic, strong) NSArray<UIButton *> *tabButtons;
 @property (nonatomic, assign) NSInteger selectedTab;   /* 0=歌单 1=搜索 2=最近 */
+/* 11142708：右上角「正在播放」入口按钮 */
+@property (nonatomic, strong) UIButton *nowPlayingEntryButton;
 
 /* 内容区 */
 @property (nonatomic, strong) UITableView *table;
@@ -1297,9 +1349,33 @@ static void MFInstallCrashHandler(void) {
         }
         prev = b;
     }
+    /*
+     * 11142708：最后一个 tab 不再顶到 trailing
+     * 右侧留 MFS(72) 给「正在播放」入口按钮
+     */
     if (prev) {
-        [cons addObject:[prev.trailingAnchor constraintEqualToAnchor:self.tabBar.trailingAnchor]];
+        [cons addObject:[prev.trailingAnchor constraintEqualToAnchor:self.tabBar.trailingAnchor
+                                                             constant:-MFS(72)]];
     }
+
+    /* ---- 11142708：「正在播放」入口（右上角声波按钮）---- */
+    UIButton *npBtn = [UIButton buttonWithType:0];
+    npBtn.tag = 9001;
+    npBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    npBtn.backgroundColor = [UIColor clearColor];
+    [npBtn addTarget:self action:@selector(onOpenNowPlaying) forControlEvents:64];
+    [self.tabBar addSubview:npBtn];
+    self.nowPlayingEntryButton = npBtn;
+
+    [cons addObject:[npBtn.trailingAnchor constraintEqualToAnchor:self.tabBar.trailingAnchor constant:-MFS(4)]];
+    [cons addObject:[npBtn.centerYAnchor constraintEqualToAnchor:self.tabBar.centerYAnchor]];
+    [cons addObject:[npBtn.widthAnchor constraintEqualToConstant:MFS(52)]];
+    [cons addObject:[npBtn.heightAnchor constraintEqualToConstant:MFS(46)]];
+
+    /* 尺寸在 runloop 后才有，延后绘制图标 */
+    dispatch_async(dispatch_get_main_queue(), ^{
+        MFApplyWaveIcon(npBtn, NO);
+    });
 
     /*
      * 11142654：搜索框布局修复。
@@ -1492,6 +1568,34 @@ static void MFInstallCrashHandler(void) {
         [b setTitleColor:c forState:0];
         b.titleLabel.font = [UIFont systemFontOfSize:(sel ? 24.0 : 21.0)];
     }
+}
+
+/*
+ * ================================================================
+ * 11142708：点击右上角声波按钮 -> 进入正在播放页
+ * ================================================================
+ * 复用 L1840 的写法：新建 NowPlayingVC + 传 carPlayDelegate + push
+ */
+- (void)onOpenNowPlaying {
+    MFCarPlayLogBoth(@"ROOT tap NOWPLAYING ENTRY");
+    /* 图标切换到高亮态，给用户反馈 */
+    if (self.nowPlayingEntryButton) {
+        MFApplyWaveIcon(self.nowPlayingEntryButton, YES);
+    }
+    MFCarPlayWindowNowPlayingVC *np = [[MFCarPlayWindowNowPlayingVC alloc] init];
+    np.carPlayDelegate = self.carPlayDelegate;
+    np.nowPlaying = [self.carPlayDelegate nowPlayingForCarPlay];
+    [self.navigationController pushViewController:np animated:YES];
+
+    /* 800ms 后恢复常态色 */
+    __weak __typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        __strong __typeof(weakSelf) s = weakSelf;
+        if (s.nowPlayingEntryButton) {
+            MFApplyWaveIcon(s.nowPlayingEntryButton, NO);
+        }
+    });
 }
 
 - (void)onTabTap:(UIButton *)sender {
