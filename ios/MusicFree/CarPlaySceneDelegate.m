@@ -3350,6 +3350,8 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     /* 三个按钮：上一首 / 播放暂停 / 下一首 */
     UIButton *prev = [self makeControlButton:@"◀◀" action:@selector(onPrev)];
     UIButton *play = [self makeControlButton:@"▶"  action:@selector(onPlayPause)];
+    /* 11142661：保存引用，供 JS 回传状态时切换图标 */
+    self.playPauseButton = play;
     UIButton *next = [self makeControlButton:@"▶▶" action:@selector(onNext)];
 
     /* 进度文字 */
@@ -3366,6 +3368,23 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     self.timeLabel.textAlignment = NSTextAlignmentCenter;
     self.timeLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.timeLabel];
+
+    /*
+     * ============ 11142661：进度条 ============
+     *
+     * 之前只有文字时间，没有可视化进度。
+     * 这里加一条细进度条，由 JS 每 500ms 推送的 progress 驱动。
+     *
+     * 位置：时间文字上方
+     * 颜色：已播放段用主题浅蓝，未播放段用深灰
+     */
+    self.progressView = [[UIProgressView alloc] initWithProgressViewStyle:0];
+    self.progressView.progressTintColor = MFCarPlayAccentColor();
+    self.progressView.trackTintColor =
+        [UIColor colorWithRed:0.28 green:0.28 blue:0.30 alpha:1.0];
+    self.progressView.progress = 0.0;
+    self.progressView.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.progressView];
 
     /* 布局：1016 宽的车机屏幕，居中排布 */
     UIView *v = self.view;
@@ -3402,8 +3421,14 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         [next.widthAnchor constraintEqualToConstant:110],
         [next.heightAnchor constraintEqualToConstant:64],
 
-        /* 时间 */
-        [self.timeLabel.topAnchor constraintEqualToAnchor:play.bottomAnchor constant:18],
+        /* 进度条：按钮下方，左右留边 */
+        [self.progressView.topAnchor constraintEqualToAnchor:play.bottomAnchor constant:18],
+        [self.progressView.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:40],
+        [self.progressView.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-40],
+        [self.progressView.heightAnchor constraintEqualToConstant:4],
+
+        /* 时间：进度条下方 */
+        [self.timeLabel.topAnchor constraintEqualToAnchor:self.progressView.bottomAnchor constant:8],
         [self.timeLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:24],
         [self.timeLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-24],
     ]];
@@ -3452,6 +3477,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     if (![state isKindOfClass:[NSDictionary class]]) {
         return;
     }
+
     NSNumber *isPlaying = [state[@"isPlaying"] isKindOfClass:[NSNumber class]]
         ? state[@"isPlaying"] : nil;
     NSNumber *prog = [state[@"progress"] isKindOfClass:[NSNumber class]]
@@ -3459,27 +3485,56 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     NSNumber *dur = [state[@"duration"] isKindOfClass:[NSNumber class]]
         ? state[@"duration"] : nil;
 
-    MFCarPlayLogBoth(@"NOWPLAYING state update: playing=%@ progress=%@ duration=%@",
-          isPlaying, prog, dur);
+    double cur = prog ? prog.doubleValue : 0;
+    double total = dur ? dur.doubleValue : 0;
 
-    /* 更新播放/暂停按钮文字（构建 B 会换成图标） */
+    MFCarPlayLogBoth(@"NOWPLAYING state: playing=%@ pos=%.0f/%.0f",
+          isPlaying, cur, total);
+
+    /*
+     * ============ 11142661：实时更新三件事 ============
+     *
+     * 由 JS 每 500ms 推送一次（pushNowPlayingState 里的 setInterval）。
+     *
+     *   1) 播放/暂停图标：isPlaying -> U+23F8 / U+25B6
+     *   2) 进度条：progress / duration
+     *   3) 时间文字 + 歌词高亮
+     */
+
+    /* 1. 图标切换 */
     if (isPlaying && self.playPauseButton) {
-        NSString *t = isPlaying.boolValue ? @"\u23F8" : @"\u25B6";   /* ⏸ / ▶ */
-        [self.playPauseButton setTitle:t forState:0];
+        unichar code = isPlaying.boolValue ? 0x23F8 : 0x25B6;
+        NSString *sym = [NSString stringWithCharacters:&code length:1];
+        [self.playPauseButton setTitle:sym forState:0];
     }
 
-    /* 11142657：记录进度供歌词高亮使用 */
-    if (prog) {
-        self.currentProgress = prog.doubleValue;
-        [self refreshLyricHighlight];
+    /* 2. 进度条 */
+    if (self.progressView) {
+        if (total > 0) {
+            double ratio = cur / total;
+            if (ratio < 0) {
+                ratio = 0;
+            }
+            if (ratio > 1) {
+                ratio = 1;
+            }
+            /* 动画平滑过渡，避免每 500ms 硬跳一格 */
+            [self.progressView setProgress:ratio animated:YES];
+        } else {
+            self.progressView.progress = 0;
+        }
     }
 
-    /* 更新时间文字 */
-    if (prog && dur && self.timeLabel) {
+    /* 3. 时间文字 */
+    if (self.timeLabel && total > 0) {
         self.timeLabel.text = [NSString stringWithFormat:@"%@   /   %@",
-                               [self formatTime:prog.doubleValue],
-                               [self formatTime:dur.doubleValue]];
+                               [self formatTime:cur],
+                               [self formatTime:total]];
     }
+
+    /* 4. 歌词高亮联动 */
+    self.currentProgress = cur;
+    [self refreshLyricHighlight];
 }
 
 - (UIButton *)makeControlButton:(NSString *)text action:(SEL)action {

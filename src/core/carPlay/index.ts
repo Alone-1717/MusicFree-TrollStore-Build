@@ -335,7 +335,52 @@ export function setupCarPlay() {
         }
     }, 2000);
 
-    trace("[CarPlay] JS bridge started (search + state + lyric channels ready)");
+    /*
+     * ============ 11142661：播放状态实时推送 ============
+     *
+     * 目的：让车机播放页的进度条走动、播放/暂停图标切换。
+     *
+     * 为什么用定时器：
+     *   react-native-track-player 的 ProgressChanged 事件在
+     *   某些版本/配置下不触发，而 getProgress() 一定可用。
+     *   500ms 一次足够平滑，开销可忽略（只是读一个数字 + 过一次桥）。
+     *
+     * 去重：状态没变就不推（避免无意义过桥）。
+     */
+    let lastStateSig = "";
+    setInterval(async () => {
+        try {
+            const music = TrackPlayer.currentMusic;
+            const key = music?.id ?? "";
+            let progress = 0;
+            let isPlaying = 0;
+            try {
+                const p = await TrackPlayer.getProgress();
+                progress = Math.floor(p?.position ?? 0);   /* 取整，减少变化频率 */
+            } catch (e) {
+                /* 未播放 */
+            }
+            try {
+                const st = await TrackPlayer.getPlaybackState();
+                isPlaying = st?.state === 3 ? 1 : 0;
+            } catch (e) {
+                /* 忽略 */
+            }
+
+            /* 签名：曲目 + 秒数 + 播放态 */
+            const sig = `${key}|${progress}|${isPlaying}`;
+            if (sig === lastStateSig) {
+                return;
+            }
+            lastStateSig = sig;
+
+            await pushNowPlayingState();
+        } catch (e) {
+            /* 静默，不打扰 */
+        }
+    }, 500);
+
+    trace("[CarPlay] JS bridge started (search + state + lyric channels ready, 500ms state ticker)");
 }
 
 export default {
