@@ -4038,6 +4038,23 @@ static dispatch_source_t sGCDPollTimer = NULL;
     dim.backgroundColor = [UIColor blackColor];
     dim.alpha = 0.55;
     dim.translatesAutoresizingMaskIntoConstraints = NO;
+    /*
+     * ================================================================
+     * 11142691：修复背景全黑
+     * ================================================================
+     *
+     * 证据：NowPlayingVC 里 7 个子视图中，
+     *       只有 backgroundImageView 没有 addSubview：
+     *
+     *   VIEW                    CREATED  ADDED
+     *   backgroundImageView     YES      NO    <-- 唯一漏的
+     *   titleLabel / artistLabel / coverView /
+     *   timeLabel / durationLabel / progressView  都 YES
+     *
+     * 视图不加入层级就永不渲染，加了约束也没用。
+     * 必须先 addSubview，再 dim（遮罩在上层）。
+     */
+    [self.view addSubview:self.backgroundImageView];
     [self.view addSubview:dim];
 
     /*
