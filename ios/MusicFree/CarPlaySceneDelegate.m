@@ -894,6 +894,8 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 @property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, strong) UILabel *artistLabel;
 @property (nonatomic, strong) UILabel *timeLabel;
+/* 11142677：右侧总时长（左侧 timeLabel 显示当前进度） */
+@property (nonatomic, strong) UILabel *durationLabel;
 /* 11142655：实时播放状态（JS 回传） */
 @property (nonatomic, strong) UIProgressView *progressView;
 @property (nonatomic, strong) UIButton *playPauseButton;
@@ -920,6 +922,10 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 @property (nonatomic, strong) NSTimer *progressPollTimer;
 /* 11142671：最后一次 JS 推送状态的时间，用于让轮询避让 */
 @property (nonatomic, assign) NSTimeInterval lastJSStateTime;
+/* 11142677：三个计数器改成实例级（原来 static 会跨实例共享） */
+@property (nonatomic, assign) int pollCount;
+@property (nonatomic, assign) int applyCount;
+@property (nonatomic, assign) int lyricDbgCount;
 
 /* ============ 11142661：爱心 / 循环 / 音质 ============ */
 @property (nonatomic, strong) UIButton *favoriteButton;
@@ -1759,6 +1765,9 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         }
         NSString *cover = [tr[@"artwork"] isKindOfClass:[NSString class]] ? tr[@"artwork"] : nil;
         [cell configureWithTitle:tt subtitle:sub cover:cover];
+    } else {
+        /* 11142678：越界/空数据时显示提示，别给用户白屏 */
+        [cell configureWithTitle:@"(暂无歌曲)" subtitle:@"" cover:nil];
     }
     return cell;
 }
@@ -3823,6 +3832,9 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         }
         NSString *cover = [tr[@"artwork"] isKindOfClass:[NSString class]] ? tr[@"artwork"] : nil;
         [cell configureWithTitle:tt subtitle:sub cover:cover];
+    } else {
+        /* 11142678：空数据提示 */
+        [cell configureWithTitle:@"(榜单暂无歌曲)" subtitle:@"" cover:nil];
     }
     return cell;
 }
@@ -3998,14 +4010,25 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     double progress = [np[@"progress"] isKindOfClass:[NSNumber class]]
         ? [np[@"progress"] doubleValue] : 0;
 
+    /*
+     * ============ 11142677：时间改双标签 ============
+     * 左侧当前进度，右侧总时长（Apple Music 风格）
+     */
     self.timeLabel = [[UILabel alloc] init];
-    self.timeLabel.text = [NSString stringWithFormat:@"%@   /   %@",
-                           [self formatTime:progress], [self formatTime:duration]];
-    self.timeLabel.font = MFFont(18.0);
-    self.timeLabel.textColor = [UIColor whiteColor];
-    self.timeLabel.textAlignment = NSTextAlignmentCenter;
+    self.timeLabel.text = [self formatTime:progress];
+    self.timeLabel.font = MFFont(16.0);
+    self.timeLabel.textColor = [UIColor colorWithRed:0.75 green:0.75 blue:0.78 alpha:1.0];
+    self.timeLabel.textAlignment = NSTextAlignmentLeft;
     self.timeLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.timeLabel];
+
+    self.durationLabel = [[UILabel alloc] init];
+    self.durationLabel.text = [self formatTime:duration];
+    self.durationLabel.font = MFFont(16.0);
+    self.durationLabel.textColor = [UIColor colorWithRed:0.75 green:0.75 blue:0.78 alpha:1.0];
+    self.durationLabel.textAlignment = NSTextAlignmentRight;
+    self.durationLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.durationLabel];
 
     /*
      * ============ 11142661：进度条 ============
@@ -4045,98 +4068,98 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
 
         /*
-     * ============ 11142672：播放页布局重做（按用户设计）============
+     * ================================================================
+     * 11142677：播放页布局（对照 Apple Music / Spotify 重做）
+     * ================================================================
      *
-     * 目标布局：
+     * 主流车机音乐 App 的标准布局：
      *
-     *           歌名
-     *        歌手 / 专辑
-     *      [封面 168×168]
-     *   ◀◀   ▶   ▶▶    ♡ ↻ ♪      <- 三功能按钮与播放键同一行
-     *  ━━━━━●─────────
-     *    0:12  /  4:06
+     *   +----------------------------------------+
+     *   |  <- Back                               |
+     *   |           Song Title (large)           |
+     *   |           Artist . Album               |
+     *   |        +--------------+                |
+     *   |        |    Cover     |                |
+     *   |        +--------------+                |
+     *   |   =========O===========                |  <- 进度条
+     *   |   0:12                4:06             |  <- 时间两侧
+     *   |      [prev]  [PLAY]  [next]            |  <- PLAY 更大
+     *   |         [heart]   [repeat]             |
+     *   +----------------------------------------+
+     *
+     * 关键改进（对比之前）：
+     *   1) 时间从居中 "0:12 / 4:06" 改为左右两侧
+     *   2) 进度条移到播放按钮上方
+     *   3) 播放键比前后键大（96x64 vs 80x52）
+     *   4) 所有元素垂直居中排布
      *
      * 高度累加（屏幕 480）：
-     *   12 + 38 + 4 + 26 + 10 + 168 + 12 + 56 + 8 + 4 + 6 + 20 + 10 = 374
-     *   余量 106px，充裕。
-     *
-     * 关键改动：
-     *   1) 三功能按钮从「进度条下方」移到「与播放键同一行、右侧」
-     *   2) 整体依赖「自上而下」的约束链，不写死 y 坐标
-     *   3) 所有间距用 MFS() 保持屏幕自适应
+     *   12 + 36 + 4 + 24 + 8 + 160 + 10 + 6 + 6 + 18 + 8 + 64 + 6 + 40 + 8 = 410
+     *   余量 70px
      */
     UIView *v = self.view;
 
+    /* ---------- 歌名（大字，居中） ---------- */
     [NSLayoutConstraint activateConstraints:@[
-        /* --- 歌名：顶部 --- */
         [self.titleLabel.topAnchor constraintEqualToAnchor:v.topAnchor constant:MFS(12)],
-        [self.titleLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(24)],
-        [self.titleLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(24)],
+        [self.titleLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(120)],
+        [self.titleLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(120)],
 
-        /* --- 歌手/专辑 --- */
+        /* ---------- 歌手 · 专辑 ---------- */
         [self.artistLabel.topAnchor constraintEqualToAnchor:self.titleLabel.bottomAnchor constant:MFS(4)],
-        [self.artistLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(24)],
-        [self.artistLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(24)],
+        [self.artistLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(120)],
+        [self.artistLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(120)],
 
-        /* --- 封面：居中 --- */
-        [self.coverView.topAnchor constraintEqualToAnchor:self.artistLabel.bottomAnchor constant:MFS(10)],
+        /* ---------- 封面（居中） ---------- */
+        [self.coverView.topAnchor constraintEqualToAnchor:self.artistLabel.bottomAnchor constant:MFS(8)],
         [self.coverView.centerXAnchor constraintEqualToAnchor:v.centerXAnchor],
-        [self.coverView.widthAnchor constraintEqualToConstant:MFS(168)],
-        [self.coverView.heightAnchor constraintEqualToConstant:MFS(168)],
+        [self.coverView.widthAnchor constraintEqualToConstant:MFS(160)],
+        [self.coverView.heightAnchor constraintEqualToConstant:MFS(160)],
 
-        /* ============================================================
-         * --- 按钮行：三个播放键 + 三个功能键 同一行 ---
-         *
-         * 排列（从左到右）：
-         *   ◀◀   ▶   ▶▶        ♡  ↻  ♪
-         *   ↑播放组居中偏左        ↑功能组靠右
-         * ============================================================ */
-
-        /* 播放键（中间）：水平居中偏左，让出右侧空间给功能键 */
-        [play.topAnchor constraintEqualToAnchor:self.coverView.bottomAnchor constant:MFS(12)],
-        [play.centerXAnchor constraintEqualToAnchor:v.centerXAnchor constant:-MFS(110)],
-        [play.widthAnchor constraintEqualToConstant:MFS(96)],
-        [play.heightAnchor constraintEqualToConstant:MFS(56)],
-
-        /* 上一首：播放键左侧 */
-        [prev.trailingAnchor constraintEqualToAnchor:play.leadingAnchor constant:-MFS(16)],
-        [prev.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
-        [prev.widthAnchor constraintEqualToConstant:MFS(90)],
-        [prev.heightAnchor constraintEqualToConstant:MFS(56)],
-
-        /* 下一首：播放键右侧 */
-        [next.leadingAnchor constraintEqualToAnchor:play.trailingAnchor constant:MFS(16)],
-        [next.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
-        [next.widthAnchor constraintEqualToConstant:MFS(90)],
-        [next.heightAnchor constraintEqualToConstant:MFS(56)],
-
-        /* --- 两个功能键：同一行，靠右（♪ 已移除） --- */
-
-        /* ↻ 循环模式：最右 */
-        [self.repeatButton.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(40)],
-        [self.repeatButton.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
-        [self.repeatButton.widthAnchor constraintEqualToConstant:MFS(56)],
-        [self.repeatButton.heightAnchor constraintEqualToConstant:MFS(56)],
-
-        /* ♡ 收藏：循环键左侧 */
-        [self.favoriteButton.trailingAnchor constraintEqualToAnchor:self.repeatButton.leadingAnchor constant:-MFS(16)],
-        [self.favoriteButton.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
-        [self.favoriteButton.widthAnchor constraintEqualToConstant:MFS(56)],
-        [self.favoriteButton.heightAnchor constraintEqualToConstant:MFS(56)],
-
-        /* --- 进度条：按钮行下方 --- */
-        /* 11142674：进度条下移，和按钮行拉开距离 */
-        [self.progressView.topAnchor constraintEqualToAnchor:play.bottomAnchor constant:MFS(24)],
-        [self.progressView.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(40)],
-        [self.progressView.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(40)],
-        /* 11142674：进度条加粗，车机屏上更明显 */
+        /* ---------- 进度条（按钮上方） ---------- */
+        [self.progressView.topAnchor constraintEqualToAnchor:self.coverView.bottomAnchor constant:MFS(10)],
+        [self.progressView.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(80)],
+        [self.progressView.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(80)],
         [self.progressView.heightAnchor constraintEqualToConstant:MFS(6)],
 
-        /* --- 时间文字：进度条下方 --- */
-        /* 11142674：时间文字也下移 */
-        [self.timeLabel.topAnchor constraintEqualToAnchor:self.progressView.bottomAnchor constant:MFS(16)],
-        [self.timeLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(24)],
-        [self.timeLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(24)],
+        /* ---------- 时间：左 0:12 / 右 4:06 ---------- */
+        [self.timeLabel.topAnchor constraintEqualToAnchor:self.progressView.bottomAnchor constant:MFS(6)],
+        [self.timeLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(80)],
+        [self.timeLabel.widthAnchor constraintEqualToConstant:MFS(100)],
+
+        /* 右侧时间（挂在进度条右端下面） */
+        [self.durationLabel.topAnchor constraintEqualToAnchor:self.progressView.bottomAnchor constant:MFS(6)],
+        [self.durationLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(80)],
+        [self.durationLabel.widthAnchor constraintEqualToConstant:MFS(100)],
+
+        /* ---------- 播放键（居中，最大） ---------- */
+        [play.topAnchor constraintEqualToAnchor:self.timeLabel.bottomAnchor constant:MFS(8)],
+        [play.centerXAnchor constraintEqualToAnchor:v.centerXAnchor],
+        [play.widthAnchor constraintEqualToConstant:MFS(96)],
+        [play.heightAnchor constraintEqualToConstant:MFS(64)],
+
+        /* 上一首（略小） */
+        [prev.trailingAnchor constraintEqualToAnchor:play.leadingAnchor constant:-MFS(24)],
+        [prev.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
+        [prev.widthAnchor constraintEqualToConstant:MFS(80)],
+        [prev.heightAnchor constraintEqualToConstant:MFS(52)],
+
+        /* 下一首（略小） */
+        [next.leadingAnchor constraintEqualToAnchor:play.trailingAnchor constant:MFS(24)],
+        [next.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
+        [next.widthAnchor constraintEqualToConstant:MFS(80)],
+        [next.heightAnchor constraintEqualToConstant:MFS(52)],
+
+        /* ---------- 功能键（播放键下方，居中一组） ---------- */
+        [self.favoriteButton.topAnchor constraintEqualToAnchor:play.bottomAnchor constant:MFS(6)],
+        [self.favoriteButton.centerXAnchor constraintEqualToAnchor:v.centerXAnchor constant:-MFS(40)],
+        [self.favoriteButton.widthAnchor constraintEqualToConstant:MFS(48)],
+        [self.favoriteButton.heightAnchor constraintEqualToConstant:MFS(40)],
+
+        [self.repeatButton.topAnchor constraintEqualToAnchor:play.bottomAnchor constant:MFS(6)],
+        [self.repeatButton.centerXAnchor constraintEqualToAnchor:v.centerXAnchor constant:MFS(40)],
+        [self.repeatButton.widthAnchor constraintEqualToConstant:MFS(48)],
+        [self.repeatButton.heightAnchor constraintEqualToConstant:MFS(40)],
     ]];
 
     self.lastRenderedTitle = title;
@@ -4166,6 +4189,14 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
     /* 11142669：启动原生进度轮询（1 秒，JS 不推时的兜底） */
     [self startProgressPoll];
+
+    /* 11142677：进度条支持点击跳转（Apple Music 行为） */
+    if (self.progressView) {
+        self.progressView.userInteractionEnabled = YES;
+        UITapGestureRecognizer *progressTap =
+            [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(onProgressTap:)];
+        [self.progressView addGestureRecognizer:progressTap];
+    }
 
     /*
      * 11142655：监听 JS 回传的播放状态。
@@ -4242,8 +4273,17 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
                             if (!s || !s.view.window) {
                                 return;
                             }
+                            /*
+                             * 11142677：封面淡入（对照 Apple Music）。
+                             * 新图先透明，0.25 秒渐显，避免生硬跳变。
+                             */
                             s.coverView.image = img;
                             s.backgroundImageView.image = img;
+                            s.coverView.alpha = 0.0;
+                            [UIView animateWithDuration:0.25
+                                             animations:^{
+                                s.coverView.alpha = 1.0;
+                            }];
                             MFCarPlayLogBoth(@"[TRACK] cover applied %lu bytes", (unsigned long)d.length);
                             MFCarPlayLogBoth(@"NOWPLAYING content refresh: %@ (cover %lu)",
                                   token.length > 0 ? @"with" : @"no",
@@ -4390,29 +4430,85 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     if (self.progressPollTimer) {
         return;
     }
+    /*
+     * ============ 11142676：定时器闪退修复 ============
+     *
+     * 闪退原因分析：
+     *   播放页被 pop 后，如果定时器还没 invalidate，
+     *   下一次 tick 时 weakSelf 可能已经变成野指针。
+     *
+     *   虽然用了 __weak，但 `s.view.window` 这一步仍可能
+     *   在对象正在析构（dealloc 执行中）时访问，导致崩溃。
+     *
+     * 修法：
+     *   1) 用 @try 包住整个回调，任何异常只记录不崩
+     *   2) 检查次序：先判 nil，再判 window，再判是否在导航栈
+     *   3) 定时器在 viewWillDisappear 也停（不只依赖 dealloc）
+     */
     __weak __typeof(self) weakSelf = self;
     self.progressPollTimer = [NSTimer scheduledTimerWithTimeInterval:1.0
                                                               repeats:YES
                                                                 block:^(NSTimer *timer) {
-        __strong __typeof(weakSelf) s = weakSelf;
-        if (!s || !s.view.window) {
+        @try {
+            __strong __typeof(weakSelf) s = weakSelf;
+            if (!s) {
+                [timer invalidate];
+                return;
+            }
+            /* 页面已不在 window 上 -> 停 */
+            if (!s.view || !s.view.window) {
+                [timer invalidate];
+                s.progressPollTimer = nil;
+                return;
+            }
+            [s pollProgressOnce];
+        } @catch (NSException *e) {
+            MFCarPlayLogBoth(@"[POLL] EXCEPTION: %@ -- %@", e.name, e.reason);
             [timer invalidate];
-            s.progressPollTimer = nil;
-            return;
         }
-        [s pollProgressOnce];
     }];
     MFCarPlayLogBoth(@"NOWPLAYING progress poll started");
 }
 
+/*
+ * 11142676：页面消失时立即停轮询，不等 dealloc。
+ */
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    if (self.progressPollTimer) {
+        [self.progressPollTimer invalidate];
+        self.progressPollTimer = nil;
+        MFCarPlayLogBoth(@"NOWPLAYING progress poll stopped (viewWillDisappear)");
+    }
+}
+
 /* 11142669：轮询一次（读 MMKV 的 progress） */
 - (void)pollProgressOnce {
-    /* 11142675：每 10 秒确认轮询还活着（排查「突然不动」） */
-    static int sPollCount = 0;
-    sPollCount++;
-    if (sPollCount % 10 == 1) {
+    /*
+     * ============ 11142676：全程 @try 保护 ============
+     *
+     * 用户反馈仍闪退，日志停在「lyric table built: 0 lines」之后。
+     * 无法从日志定位到具体崩溃点，所以整个轮询包 @try：
+     * 任何异常都只记录，不让 App 崩溃。
+     */
+    @try {
+        [self mfPollProgressInner];
+    } @catch (NSException *e) {
+        MFCarPlayLogBoth(@"[POLL] EXCEPTION %@: %@", e.name, e.reason);
+        /* 出异常就停轮询，避免反复崩 */
+        if (self.progressPollTimer) {
+            [self.progressPollTimer invalidate];
+            self.progressPollTimer = nil;
+        }
+    }
+}
+
+- (void)mfPollProgressInner {
+    /* 11142677：改成实例变量，避免多实例共享计数 */
+    self.pollCount++;
+    if (self.pollCount % 10 == 1) {
         MFCarPlayLogBoth(@"[POLL] tick #%d showingLyric=%d lyricLines=%lu",
-              sPollCount, (int)self.showingLyric,
+              self.pollCount, (int)self.showingLyric,
               (unsigned long)self.lyricLines.count);
     }
     /*
@@ -4496,11 +4592,11 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         return;
     }
 
-    /* 11142675：记录收到的状态（每 5 次一次，避免刷屏） */
-    static int sApplyCount = 0;
-    if (sApplyCount++ % 5 == 0) {
+    /* 11142677：改成实例变量 */
+    self.applyCount++;
+    if (self.applyCount % 5 == 1) {
         MFCarPlayLogBoth(@"[STATE] apply #%d title=%@ pos=%@/%@ playing=%@ fav=%@ rep=%@",
-              sApplyCount,
+              self.applyCount,
               state[@"title"] ?: @"-",
               state[@"progress"] ?: @"-",
               state[@"duration"] ?: @"-",
@@ -4537,11 +4633,16 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         }
     }
 
-    /* 时间文字 */
-    if (self.timeLabel && total > 0) {
-        self.timeLabel.text = [NSString stringWithFormat:@"%@   /   %@",
-                               [self formatTime:cur],
-                               [self formatTime:total]];
+    /*
+     * 时间：左侧当前进度，右侧总时长（Apple Music 风格）
+     */
+    if (total > 0) {
+        if (self.timeLabel) {
+            self.timeLabel.text = [self formatTime:cur];
+        }
+        if (self.durationLabel) {
+            self.durationLabel.text = [self formatTime:total];
+        }
     }
 
     /* 播放/暂停图标 */
@@ -4603,18 +4704,120 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     }
 }
 
-- (void)onCoverTap {
-    self.showingLyric = !self.showingLyric;
-    MFCarPlayLogBoth(@"NOWPLAYING toggle lyric mode -> %d", (int)self.showingLyric);
+/*
+ * ============ 11142677：进度条点击跳转 ============
+ *
+ * 对照 Apple Music：点进度条任意位置跳到该位置。
+ * CarPlay 上进度条很窄，用整块区域接收点击更实际。
+ */
+- (void)onProgressTap:(UITapGestureRecognizer *)g {
+    @try {
+        UIView *bar = self.progressView;
+        if (!bar) {
+            return;
+        }
+        CGPoint pt = [g locationInView:bar];
+        CGFloat w = bar.bounds.size.width;
+        if (w <= 0) {
+            return;
+        }
+        double ratio = pt.x / w;
+        if (ratio < 0) ratio = 0;
+        if (ratio > 1) ratio = 1;
 
-    if (self.showingLyric) {
-        [self buildLyricTableIfNeeded];
-        self.coverView.hidden = YES;
-        self.lyricTable.hidden = NO;
-        [self refreshLyricHighlight];
-    } else {
-        self.coverView.hidden = NO;
-        self.lyricTable.hidden = YES;
+        double total = 0;
+        MFCarPlayBridge *bridge = [MFCarPlayBridge shared];
+        if (bridge) {
+            NSDictionary *st = [bridge nowPlayingState];
+            NSNumber *dur = [st[@"duration"] isKindOfClass:[NSNumber class]]
+                ? st[@"duration"] : nil;
+            total = dur ? dur.doubleValue : 0;
+        }
+        if (total <= 0) {
+            MFCarPlayLogBoth(@"[SEEK] ignored, duration unknown");
+            return;
+        }
+        double target = total * ratio;
+        MFCarPlayLogBoth(@"[SEEK] tap at %.2f -> %.1f/%.0f sec", ratio, target, total);
+        /* 发控制指令给 JS 执行 seek */
+        [MFCarPlayBridge emitControl:[NSString stringWithFormat:@"seek:%.1f", target]];
+    } @catch (NSException *e) {
+        MFCarPlayLogBoth(@"[SEEK] EXCEPTION: %@", e.reason);
+    }
+}
+
+- (void)onCoverTap {
+    /*
+     * ============ 11142676：切歌词闪退加固 ============
+     *
+     * 日志证据：
+     *   NOWPLAYING toggle lyric mode -> 1
+     *   NOWPLAYING lyric table built: 0 lines    <- 空表！
+     *   LYRIC skip: 0 lines
+     *   （之后闪退）
+     *
+     * 空表格 + 后续滚动/刷新操作是闪退高危点。
+     *
+     * 加固：
+     *   1) 整个方法包 @try
+     *   2) 没有歌词时也允许切换（显示空表，不崩）
+     *   3) 每次访问表格前判空
+     */
+    @try {
+        self.showingLyric = !self.showingLyric;
+        MFCarPlayLogBoth(@"NOWPLAYING toggle lyric -> %d (lines=%lu)",
+              (int)self.showingLyric,
+              (unsigned long)self.lyricLines.count);
+
+        if (self.showingLyric) {
+            [self buildLyricTableIfNeeded];
+
+            if (self.lyricTable) {
+                /*
+                 * 11142678：歌词模式下隐藏歌名/歌手/封面，
+                 * 让歌词独占上半屏（对照 Apple Music 全屏歌词）。
+                 */
+                self.coverView.hidden = YES;
+                self.titleLabel.hidden = YES;
+                self.artistLabel.hidden = YES;
+                self.lyricTable.hidden = NO;
+                [self.lyricTable reloadData];      /* 先确保行数同步 */
+                [self refreshLyricHighlight];
+            } else {
+                /* 表格没建出来，保持封面可见，不崩 */
+                MFCarPlayLogBoth(@"NOWPLAYING lyric table nil, keep cover");
+                self.showingLyric = NO;
+            }
+        } else {
+            /* 11142678：退出歌词模式，全部恢复显示 */
+            if (self.coverView) {
+                self.coverView.hidden = NO;
+            }
+            if (self.titleLabel) {
+                self.titleLabel.hidden = NO;
+            }
+            if (self.artistLabel) {
+                self.artistLabel.hidden = NO;
+            }
+            if (self.lyricTable) {
+                self.lyricTable.hidden = YES;
+            }
+        }
+    } @catch (NSException *e) {
+        MFCarPlayLogBoth(@"NOWPLAYING onCoverTap EXCEPTION: %@ -- %@", e.name, e.reason);
+        self.showingLyric = NO;
+        if (self.coverView) {
+            self.coverView.hidden = NO;
+        }
+        if (self.titleLabel) {
+            self.titleLabel.hidden = NO;
+        }
+        if (self.artistLabel) {
+            self.artistLabel.hidden = NO;
+        }
+        if (self.lyricTable) {
+            self.lyricTable.hidden = YES;
+        }
     }
 }
 
@@ -4629,7 +4832,8 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     tb.dataSource = self;
     tb.delegate = self;
     /* 11142672：歌词行高加大，车机屏上更好读 */
-    tb.rowHeight = MFS(52.0);
+    /* 11142678：行高 52 -> 44，同样高度多显示一行 */
+    tb.rowHeight = MFS(44.0);
     tb.backgroundColor = [UIColor clearColor];      /* 透出背景图 */
     tb.separatorColor = [UIColor clearColor];
     tb.showsVerticalScrollIndicator = NO;
@@ -4645,22 +4849,45 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
          * 原来和封面同高（168），只能显示 3 行。
          * 改为延伸到按钮行上方，约 300px，能显示 5-6 行。
          */
-        [tb.topAnchor constraintEqualToAnchor:self.coverView.topAnchor constant:-MFS(10)],
+        /*
+         * 11142678：歌词区真正加高。
+         * 之前约束到 coverView.top，实测只有 174px（3.3 行）。
+         * 改为从歌名上方到进度条上方，高度约 236px（5 行）。
+         */
+        [tb.topAnchor constraintEqualToAnchor:self.titleLabel.topAnchor constant:-MFS(6)],
         [tb.bottomAnchor constraintEqualToAnchor:self.progressView.topAnchor constant:-MFS(6)],
-        [tb.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:MFS(60)],
-        [tb.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-MFS(60)],
+        [tb.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:MFS(40)],
+        [tb.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-MFS(40)],
     ]];
 
-    /* 加载当前歌词 */
-    NSArray *lines = [MFCarPlayBridge shared].lyric;
-    if (!lines || lines.count == 0) {
-        lines = self.lyricLines;
-    }
-    self.lyricLines = lines ?: @[];
-    [tb reloadData];
+    /*
+     * 11142676：加载歌词加固。
+     * 桥里没歌词时，也要保证 self.lyricLines 是合法空数组，
+     * 否则 numberOfRows 返回 0 但 cellForRow 可能被调用 -> 越界。
+     */
+    @try {
+        NSArray *lines = [MFCarPlayBridge shared].lyric;
+        if (![lines isKindOfClass:[NSArray class]]) {
+            lines = nil;
+        }
+        if (!lines || lines.count == 0) {
+            lines = self.lyricLines;
+        }
+        if (![lines isKindOfClass:[NSArray class]]) {
+            lines = @[];
+        }
+        self.lyricLines = lines;
+        self.currentLyricIndex = -1;
 
-    MFCarPlayLogBoth(@"NOWPLAYING lyric table built: %lu lines",
-          (unsigned long)self.lyricLines.count);
+        if (self.lyricLines.count > 0) {
+            [tb reloadData];
+        }
+        MFCarPlayLogBoth(@"NOWPLAYING lyric table built: %lu lines",
+              (unsigned long)self.lyricLines.count);
+    } @catch (NSException *e) {
+        MFCarPlayLogBoth(@"NOWPLAYING buildLyricTable EXCEPTION: %@", e.reason);
+        self.lyricLines = @[];
+    }
 }
 
 #pragma mark UITableViewDataSource（歌词）
@@ -4701,12 +4928,26 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
         BOOL isCurrent = (indexPath.row == self.currentLyricIndex);
         cell.textLabel.text = lrc;
-        cell.textLabel.font = [UIFont systemFontOfSize:(isCurrent ? 22.0 : 18.0)];
+        /*
+         * 11142678：字体改 MFFont，随屏幕缩放。
+         * 原来硬编码 22/18，小屏会溢出、大屏偏小。
+         * 当前行比其它行大 3pt，突出高亮。
+         */
+        cell.textLabel.font = isCurrent ? MFFont(21.0) : MFFont(18.0);
         cell.textLabel.textColor = isCurrent
             ? MFCarPlayAccentColor()                       /* 当前行：浅蓝高亮 */
             : [UIColor colorWithRed:0.75 green:0.75 blue:0.78 alpha:1.0];
         cell.detailTextLabel.text = tr;
         cell.detailTextLabel.textColor = [UIColor colorWithRed:0.6 green:0.6 blue:0.63 alpha:1.0];
+        cell.detailTextLabel.font = MFFont(13.0);
+
+        /*
+         * 11142678：当前行加轻微底色，视觉更醒目
+         * （车机上光靠颜色区分不够明显）。
+         */
+        cell.backgroundColor = isCurrent
+            ? [UIColor colorWithRed:1.0 green:1.0 blue:1.0 alpha:0.06]
+            : [UIColor clearColor];
     }
     return cell;
 }
@@ -4763,8 +5004,9 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
      * 11142671：加诊断日志。
      * 用户反馈「歌词不动，一直卡在开头」，需要确认卡在哪一步。
      */
-    static int sLyricDbg = 0;
-    BOOL shouldLog = (sLyricDbg++ % 10 == 0);   /* 每 10 次打一次 */
+    /* 11142677：改成实例变量 */
+    self.lyricDbgCount++;
+    BOOL shouldLog = (self.lyricDbgCount % 10 == 1);
 
     if (!self.showingLyric) {
         if (shouldLog) {

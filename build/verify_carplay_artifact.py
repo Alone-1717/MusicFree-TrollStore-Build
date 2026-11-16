@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142675"
+EXPECTED_VERSION = "11142678"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -100,7 +100,6 @@ BINARY_MARKERS = [
     b"search '%@' hits = %lu",
     b"NOWPLAYING VC: title=%@ artist=%@ album=%@ duration=%.0f",
     b"NOWPLAYING tap PREV",
-    b"NOWPLAYING tap PLAY/PAUSE",
     b"NOWPLAYING tap NEXT",
     b"NOWPLAYING cover loaded %lu bytes",
     b"ROOT search '%@' -> local=%lu jsReady=%d",
@@ -119,10 +118,6 @@ BINARY_MARKERS = [
     b"NOWPLAYING lyric table built: %lu lines",
     b"NOWPLAYING lyric updated: %lu lines",
     b"SEARCH kb: using built-in keyboard (system kb blocked by CarPlay)",
-    b"NOWPLAYING state: playing=%@ pos=%.0f/%.0f",
-    b"NOWPLAYING tap FAVORITE",
-    b"NOWPLAYING tap REPEAT",
-    b"NOWPLAYING tap QUALITY",
     b"ROOT tab -> %ld (0=sheets 1=search 2=toplist 3=history)",
     b"ROOT topLists loaded: %lu",
     b"TOPLIST VC: title=%@ listId=%@ plugin=%@",
@@ -143,7 +138,6 @@ BINARY_MARKERS = [
     b"NOWPLAYING dealloc",
     b"SCENE DELEGATE dealloc",
     b"ROOT tab IGNORED: bad tag=%ld",
-    b"ROOT bg tap -> hide keyboard",
     b"NOWPLAYING progress poll started",
     b"NOWPLAYING content updated: %@ - %@",
     b"BRIDGE state: %@ - %@ playing=%@ pos=%@/%@",
@@ -162,6 +156,9 @@ BINARY_MARKERS = [
     b"[ACTION] play/pause tapped",
     b"[KEYBOARD] letter",
     b"[KEYBOARD] hidden by bg tap",
+    b"[SEEK] tap at %.2f",
+    b"[SEEK] seeking to",
+    b"lyric table built: %lu lines",
 ]
 
 # 旧版已证伪/致命的标记，产物里绝不能再出现

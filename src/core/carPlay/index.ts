@@ -278,6 +278,21 @@ async function handleControl(action: string) {
     /* 11142675：记录收到的控制指令 */
     logToNative(`[CTRL] recv "${action}"`);
     try {
+        /*
+         * 11142677：带参数的指令（seek:123.4）先单独处理。
+         */
+        if (action.startsWith("seek:")) {
+            const sec = parseFloat(action.slice(5));
+            if (!isFinite(sec) || sec < 0) {
+                logToNative(`[SEEK] invalid value: ${action}`);
+                return;
+            }
+            logToNative(`[SEEK] seeking to ${sec}s`);
+            await TrackPlayer.seekTo(sec);
+            pushNowPlayingState();
+            return;
+        }
+
         switch (action) {
             case "requestSheets":
                 pushSheets();
@@ -296,6 +311,14 @@ async function handleControl(action: string) {
                 break;
 
             /* ============ 11142661：爱心 / 循环 / 音质 ============ */
+            /*
+             * ============ 11142677：进度条点击跳转 ============
+             *
+             * 原生发 "seek:123.4" 格式，这里解析并调用 seekTo。
+             */
+            case "seek":
+                break;   /* 由下面的 default 分支处理（带参数） */
+
             case "toggle":
                 /*
                  * ============ 11142671：修复播放/暂停按钮 ============
