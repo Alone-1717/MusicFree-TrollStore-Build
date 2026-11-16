@@ -200,9 +200,19 @@ static void MFLoadCoverIntoCell(NSString *urlStr, UITableViewCell *cell) {
             return;
         }
         dispatch_async(dispatch_get_main_queue(), ^{
-            __strong UITableViewCell *c = weakCell;
-            if (c) {
+            /*
+             * 11142667：防闪退。
+             * reloadData 后 cell 可能已不在视图层级里，
+             * 直接设图会崩。必须检查 window 是否还存在。
+             */
+            @try {
+                __strong UITableViewCell *c = weakCell;
+                if (!c || !c.window) {
+                    return;
+                }
                 c.imageView.image = img;
+            } @catch (NSException *e) {
+                MFCarPlayLogBoth(@"MFLoadCoverIntoCell threw: %@", e.reason);
             }
         });
     });
@@ -727,21 +737,50 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         return;
     }
 
+    /*
+     * ============ 11142667：异步封面防闪退 ============
+     *
+     * 用户反馈「点键盘就闪退」。
+     *
+     * 根因：每次按键都会 reloadData，reloadData 会销毁并重建所有 cell。
+     * 此时之前发起封面下载的回调仍在排队，回来后访问的 cell 可能
+     * 已经不在视图层级里（甚至已被释放），给它的 coverView 设图会崩。
+     *
+     * 修法（三重保护）：
+     *   1) weakSelf + 强引用判空（已有）
+     *   2) 检查 cell 是否还有 window（在视图层级中才更新）
+     *   3) token 一致性（防止复用到别的歌）
+     */
     NSString *token = [coverURL copy];
     __weak __typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(0, 0), ^{
-        NSData *data = [NSData dataWithContentsOfURL:[NSURL URLWithString:token]];
-        UIImage *img = data ? [UIImage imageWithData:data] : nil;
-        if (!img) {
-            return;
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            __strong __typeof(weakSelf) s = weakSelf;
-            /* 复用保护：token 一致才设置 */
-            if (s && [s.coverToken isEqualToString:token]) {
-                s.coverView.image = img;
+        @autoreleasepool {
+            NSData *data = [NSData dataWithContentsOfURL:[NSURL URLWithString:token]];
+            UIImage *img = data ? [UIImage imageWithData:data] : nil;
+            if (!img) {
+                return;
             }
-        });
+            dispatch_async(dispatch_get_main_queue(), ^{
+                @try {
+                    __strong __typeof(weakSelf) s = weakSelf;
+                    /* 1. cell 还活着 */
+                    if (!s) {
+                        return;
+                    }
+                    /* 2. cell 还在视图层级里（已被 reload 移除的就跳过） */
+                    if (!s.window) {
+                        return;
+                    }
+                    /* 3. token 一致 */
+                    if (![s.coverToken isEqualToString:token]) {
+                        return;
+                    }
+                    s.coverView.image = img;
+                } @catch (NSException *e) {
+                    MFCarPlayLogBoth(@"CELL cover set threw: %@", e.reason);
+                }
+            });
+        }
     });
 }
 
@@ -764,6 +803,8 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 @property (nonatomic, copy) NSString *currentQuery;
 /* 11142658：自绘软键盘（CarPlay 不让弹系统键盘） */
 @property (nonatomic, strong) MFCarPlayKeyboardView *keyboardView;
+/* 11142667：搜索防抖（避免每次按键都 reloadData 导致闪退） */
+@property (nonatomic, strong) NSTimer *searchDebounceTimer;
 /* 11142662：榜单数据 */
 @property (nonatomic, strong) NSArray<NSDictionary *> *topLists;
 
@@ -1020,21 +1061,53 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 }
 
 - (void)doSearch:(NSString *)query {
-    if (![query isKindOfClass:[NSString class]] || query.length == 0) {
+    /*
+     * ============ 11142667：搜索防抖 ============
+     *
+     * 用户反馈「点键盘就闪退」。
+     *
+     * 根因有两层：
+     *   1) 每次按键都同步 reloadData，UITableView 在极短时间内
+     *      反复销毁重建 cell，内部状态容易不一致 -> 崩溃
+     *   2) 销毁的 cell 上还有未完成的异步封面回调 -> 访问已释放对象
+     *
+     * 修法：250ms 防抖。用户连续打字时只在停顿后搜一次，
+     *      reloadData 次数从「每个字符一次」降到「每个词一次」。
+     */
+    if (![query isKindOfClass:[NSString class]]) {
+        return;
+    }
+
+    /* 取消上一次待执行的搜索 */
+    if (self.searchDebounceTimer) {
+        [self.searchDebounceTimer invalidate];
+        self.searchDebounceTimer = nil;
+    }
+
+    /* 空输入立即清空，不用等 */
+    if (query.length == 0) {
         self.results = @[];
         MFSafeReload(self.table, @"ROOT");
         return;
     }
 
-    /*
-     * ============ 11142655：三级搜索 ============
-     *
-     * 1) 本地歌单搜索（立即出结果，不依赖 RN）
-     * 2) 若 JS 已就绪 -> 请求联网搜索
-     * 3) JS 结果回来后替换/追加（见 handleSearchResults:）
-     *
-     * 冷启动 RN 未起时，至少还有本地结果。
-     */
+    /* 延迟 250ms 执行真正的搜索 */
+    __weak __typeof(self) weakSelf = self;
+    self.searchDebounceTimer = [NSTimer scheduledTimerWithTimeInterval:0.25
+                                                                repeats:NO
+                                                                  block:^(NSTimer *timer) {
+        __strong __typeof(weakSelf) s = weakSelf;
+        if (s) {
+            [s performSearch:query];
+        }
+    }];
+}
+
+/* 11142667：真正的搜索逻辑（防抖后调用） */
+- (void)performSearch:(NSString *)query {
+    if (![query isKindOfClass:[NSString class]] || query.length == 0) {
+        return;
+    }
     self.currentQuery = query;
 
     NSArray<NSDictionary *> *local = [self.carPlayDelegate searchForCarPlay:query] ?: @[];
@@ -1051,6 +1124,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         MFCarPlayLogBoth(@"ROOT search: JS not ready, local results only");
     }
 }
+
 
 /*
  * 11142655：JS 回传搜索结果。
@@ -3697,14 +3771,18 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
                     return;
                 }
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    __strong __typeof(weakSelf) s = weakSelf;
-                    if (s) {
+                    @try {
+                        __strong __typeof(weakSelf) s = weakSelf;
+                        /* 11142667：必须检查 window，否则页面已 pop 时会崩 */
+                        if (!s || !s.view.window) {
+                            return;
+                        }
                         s.coverView.image = img;
-                        /* 11142653：同一张图铺满背景 */
                         s.backgroundImageView.image = img;
-                        /* 封面已铺满背景，不动 view 底色 */
                         MFCarPlayLogBoth(@"NOWPLAYING cover loaded %lu bytes",
                               (unsigned long)data.length);
+                    } @catch (NSException *e) {
+                        MFCarPlayLogBoth(@"NOWPLAYING cover set threw: %@", e.reason);
                     }
                 });
             });

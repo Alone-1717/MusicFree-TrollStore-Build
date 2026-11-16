@@ -162,26 +162,59 @@ RCT_EXPORT_METHOD(carPlayJSReady)
 
 RCT_EXPORT_METHOD(setSheets:(NSArray *)sheets)
 {
+    /*
+     * 11142667：切主线程。
+     *
+     * RCT_EXPORT_METHOD 默认在 JS 线程队列执行，
+     * 但方法内部会 post NSNotification，监听方要改 UI。
+     * 从后台线程改 UI 必然闪退 —— 这是搜索/榜单闪退的根因。
+     */
+    dispatch_async(dispatch_get_main_queue(), ^{
+
     self.sheetsData = [sheets isKindOfClass:[NSArray class]] ? sheets : @[];
     [self postDataUpdate:@{@"kind": @"sheets"}];
+
+    });
 }
 
 RCT_EXPORT_METHOD(setTracks:(NSArray *)tracks forSheetId:(NSString *)sheetId)
 {
+    /*
+     * 11142667：切主线程。
+     *
+     * RCT_EXPORT_METHOD 默认在 JS 线程队列执行，
+     * 但方法内部会 post NSNotification，监听方要改 UI。
+     * 从后台线程改 UI 必然闪退 —— 这是搜索/榜单闪退的根因。
+     */
+    dispatch_async(dispatch_get_main_queue(), ^{
+
     if (![sheetId isKindOfClass:[NSString class]]) {
         return;
     }
     self.tracksData[sheetId] = [tracks isKindOfClass:[NSArray class]] ? tracks : @[];
     [self postDataUpdate:@{@"kind": @"tracks", @"sheetId": sheetId}];
+
+    });
 }
 
 RCT_EXPORT_METHOD(setNowPlaying:(NSString *)title artist:(NSString *)artist)
 {
+    /*
+     * 11142667：切主线程。
+     *
+     * RCT_EXPORT_METHOD 默认在 JS 线程队列执行，
+     * 但方法内部会 post NSNotification，监听方要改 UI。
+     * 从后台线程改 UI 必然闪退 —— 这是搜索/榜单闪退的根因。
+     */
+    dispatch_async(dispatch_get_main_queue(), ^{
+
     self.nowPlayingData = @{
         @"title": title ?: @"",
         @"artist": artist ?: @"",
     };
     [self postDataUpdate:@{@"kind": @"nowPlaying"}];
+
+    });
 }
 
 #pragma mark - 11142655：JS -> 原生 新通道
@@ -194,21 +227,34 @@ RCT_EXPORT_METHOD(setNowPlaying:(NSString *)title artist:(NSString *)artist)
  */
 RCT_EXPORT_METHOD(setSearchResults:(NSArray *)results query:(NSString *)query)
 {
-    if (![query isKindOfClass:[NSString class]]) {
-        query = @"";
-    }
-    self.searchResultsData = [results isKindOfClass:[NSArray class]] ? results : @[];
-    self.lastSearchQuery = query;
+    /*
+     * 11142667：切主线程。
+     *
+     * RCT_EXPORT_METHOD 默认在 JS 线程队列执行，
+     * 但方法内部会 post NSNotification，监听方要改 UI。
+     * 从后台线程改 UI 必然闪退 —— 这是搜索/榜单闪退的根因。
+     */
+    /*
+     * 11142667：切主线程（JS 线程改 UI 会闪退）。
+     * 参数在闭包外先归一化，避免闭包内重赋值需要 __block。
+     */
+    NSString *safeQuery = [query isKindOfClass:[NSString class]] ? query : @"";
+    NSArray *safeResults = [results isKindOfClass:[NSArray class]] ? results : @[];
 
-    MFCarPlayLogBoth(@"BRIDGE got %lu search results for '%@'",
-          (unsigned long)self.searchResultsData.count, query);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.searchResultsData = safeResults;
+        self.lastSearchQuery = safeQuery;
 
-    [[NSNotificationCenter defaultCenter] postNotificationName:kMFCarPlaySearchResults
-                                                        object:nil
-                                                      userInfo:@{
-        @"query": query,
-        @"results": self.searchResultsData,
-    }];
+        MFCarPlayLogBoth(@"BRIDGE got %lu search results for '%@'",
+              (unsigned long)safeResults.count, safeQuery);
+
+        [[NSNotificationCenter defaultCenter] postNotificationName:kMFCarPlaySearchResults
+                                                            object:nil
+                                                          userInfo:@{
+            @"query": safeQuery,
+            @"results": safeResults,
+        }];
+    });
 }
 
 /*
@@ -226,6 +272,15 @@ RCT_EXPORT_METHOD(setSearchResults:(NSArray *)results query:(NSString *)query)
  */
 RCT_EXPORT_METHOD(setNowPlayingState:(NSDictionary *)state)
 {
+    /*
+     * 11142667：切主线程。
+     *
+     * RCT_EXPORT_METHOD 默认在 JS 线程队列执行，
+     * 但方法内部会 post NSNotification，监听方要改 UI。
+     * 从后台线程改 UI 必然闪退 —— 这是搜索/榜单闪退的根因。
+     */
+    dispatch_async(dispatch_get_main_queue(), ^{
+
     if (![state isKindOfClass:[NSDictionary class]]) {
         return;
     }
@@ -249,6 +304,8 @@ RCT_EXPORT_METHOD(setNowPlayingState:(NSDictionary *)state)
     [[NSNotificationCenter defaultCenter] postNotificationName:kMFCarPlayNowPlayingState
                                                         object:nil
                                                       userInfo:state];
+
+    });
 }
 
 /*
@@ -264,6 +321,15 @@ RCT_EXPORT_METHOD(setNowPlayingState:(NSDictionary *)state)
  */
 RCT_EXPORT_METHOD(setLyric:(NSArray *)lines)
 {
+    /*
+     * 11142667：切主线程。
+     *
+     * RCT_EXPORT_METHOD 默认在 JS 线程队列执行，
+     * 但方法内部会 post NSNotification，监听方要改 UI。
+     * 从后台线程改 UI 必然闪退 —— 这是搜索/榜单闪退的根因。
+     */
+    dispatch_async(dispatch_get_main_queue(), ^{
+
     NSArray *arr = [lines isKindOfClass:[NSArray class]] ? lines : @[];
 
     /*
@@ -285,6 +351,8 @@ RCT_EXPORT_METHOD(setLyric:(NSArray *)lines)
     [[NSNotificationCenter defaultCenter] postNotificationName:kMFCarPlayLyric
                                                         object:nil
                                                       userInfo:@{@"lines": sorted}];
+
+    });
 }
 
 /* 查询当前歌词 */
@@ -301,6 +369,15 @@ RCT_EXPORT_METHOD(setLyric:(NSArray *)lines)
  */
 RCT_EXPORT_METHOD(setTopLists:(NSArray *)lists)
 {
+    /*
+     * 11142667：切主线程。
+     *
+     * RCT_EXPORT_METHOD 默认在 JS 线程队列执行，
+     * 但方法内部会 post NSNotification，监听方要改 UI。
+     * 从后台线程改 UI 必然闪退 —— 这是搜索/榜单闪退的根因。
+     */
+    dispatch_async(dispatch_get_main_queue(), ^{
+
     self.topListsData = [lists isKindOfClass:[NSArray class]] ? lists : @[];
     MFCarPlayLogBoth(@"BRIDGE got %lu top lists",
           (unsigned long)self.topListsData.count);
@@ -308,6 +385,8 @@ RCT_EXPORT_METHOD(setTopLists:(NSArray *)lists)
     [[NSNotificationCenter defaultCenter] postNotificationName:kMFCarPlayTopLists
                                                         object:nil
                                                       userInfo:@{@"lists": self.topListsData}];
+
+    });
 }
 
 /*
@@ -317,6 +396,15 @@ RCT_EXPORT_METHOD(setTopLists:(NSArray *)lists)
  */
 RCT_EXPORT_METHOD(setTopListTracks:(NSArray *)tracks listId:(NSString *)listId)
 {
+    /*
+     * 11142667：切主线程。
+     *
+     * RCT_EXPORT_METHOD 默认在 JS 线程队列执行，
+     * 但方法内部会 post NSNotification，监听方要改 UI。
+     * 从后台线程改 UI 必然闪退 —— 这是搜索/榜单闪退的根因。
+     */
+    dispatch_async(dispatch_get_main_queue(), ^{
+
     self.topListTracksData = [tracks isKindOfClass:[NSArray class]] ? tracks : @[];
     self.topListTracksId = [listId isKindOfClass:[NSString class]] ? listId : @"";
 
@@ -329,6 +417,8 @@ RCT_EXPORT_METHOD(setTopListTracks:(NSArray *)tracks listId:(NSString *)listId)
         @"listId": self.topListTracksId,
         @"tracks": self.topListTracksData,
     }];
+
+    });
 }
 
 /* 查询接口 */
