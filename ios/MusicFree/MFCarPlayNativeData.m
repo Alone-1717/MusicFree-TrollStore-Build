@@ -367,6 +367,46 @@ NSArray<NSDictionary *> *MFCarPlayNativeHistory(NSUInteger limit) {
     }
 }
 
+/*
+ * ============ 11142658：拼音转换 ============
+ *
+ * 车机软键盘只能打英文字母，中文歌名打不出来。
+ * 用 CFStringTransform 把汉字转成拼音，这样输入 "th" 也能命中「天后」。
+ *
+ * 注意：这个方法对多音字不保证准确，但用于搜索足够。
+ */
+static NSString *MFPinyinOf(NSString *hanzi) {
+    if (![hanzi isKindOfClass:[NSString class]] || hanzi.length == 0) {
+        return @"";
+    }
+    NSMutableString *ms = [hanzi mutableCopy];
+    CFStringTransform((__bridge CFMutableStringRef)ms,
+                      NULL,
+                      kCFStringTransformMandarinLatin,
+                      NO);
+    /* 去掉声调：Tiān Hòu -> Tian Hou */
+    CFStringTransform((__bridge CFMutableStringRef)ms,
+                      NULL,
+                      kCFStringTransformStripDiacritics,
+                      NO);
+    return [ms lowercaseString];
+}
+
+/* 取拼音首字母：Tian Hou -> th */
+static NSString *MFPinyinInitials(NSString *hanzi) {
+    NSString *full = MFPinyinOf(hanzi);
+    if (full.length == 0) {
+        return @"";
+    }
+    NSMutableString *out = [NSMutableString string];
+    for (NSString *part in [full componentsSeparatedByString:@" "]) {
+        if (part.length > 0) {
+            [out appendString:[part substringToIndex:1]];
+        }
+    }
+    return out;
+}
+
 NSArray<NSDictionary *> *MFCarPlayNativeSearchTracks(NSString *query) {
     if (![query isKindOfClass:[NSString class]] || query.length == 0) {
         return @[];
@@ -389,8 +429,26 @@ NSArray<NSDictionary *> *MFCarPlayNativeSearchTracks(NSString *query) {
             for (NSDictionary *tr in tracks) {
                 NSString *tt = tr[@"title"] ?: @"";
                 NSString *ar = tr[@"artist"] ?: @"";
-                BOOL hit = [[tt lowercaseString] containsString:q]
-                        || [[ar lowercaseString] containsString:q];
+                /*
+                 * 11142658：三级匹配
+                 *   1) 原文包含（中文输入 / 已存中文）
+                 *   2) 全拼包含（"tianhou" 命中「天后」）
+                 *   3) 首字母包含（"th" 命中「天后」）
+                 */
+                NSString *ttLow = [tt lowercaseString];
+                NSString *arLow = [ar lowercaseString];
+                BOOL hit = [ttLow containsString:q] || [arLow containsString:q];
+
+                if (!hit) {
+                    NSString *ttPy = MFPinyinOf(tt);
+                    NSString *arPy = MFPinyinOf(ar);
+                    hit = [ttPy containsString:q] || [arPy containsString:q];
+                }
+                if (!hit) {
+                    NSString *ttIni = MFPinyinInitials(tt);
+                    NSString *arIni = MFPinyinInitials(ar);
+                    hit = [ttIni containsString:q] || [arIni containsString:q];
+                }
                 if (!hit) {
                     continue;
                 }

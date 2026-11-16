@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142658"
+EXPECTED_VERSION = "11142660"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -122,8 +122,7 @@ BINARY_MARKERS = [
     b"NOWPLAYING lyric table built: %lu lines",
     b"NOWPLAYING lyric updated: %lu lines",
     b"SEARCH kb: win=%@ isKey=%d fieldAlpha=%.1f interaction=%d",
-    b"SEARCH kb: forced makeKeyWindow, now isKey=%d",
-    b"SEARCH kb: becomeFirstResponder after %.2fs -> %d (isFirst=%d)",
+    b"SEARCH kb: using built-in keyboard (system kb blocked by CarPlay)",
 ]
 
 # 旧版已证伪/致命的标记，产物里绝不能再出现

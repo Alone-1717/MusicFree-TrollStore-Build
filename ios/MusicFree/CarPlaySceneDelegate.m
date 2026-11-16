@@ -332,6 +332,188 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
  */
 
 /*
+ * ============ 11142658：车机内置软键盘 ============
+ *
+ * 为什么必须自绘：
+ *   日志确证 —— CarPlay 场景下我们的 UIWindow 无法成为 key window：
+ *     SEARCH kb: win=yes isKey=0
+ *     SEARCH kb: forced makeKeyWindow, now isKey=0     <- 强制失败
+ *     SEARCH kb: becomeFirstResponder after 0.00s -> 1 (isFirst=1)  <- 控件成功
+ *   控件已是第一响应者，但键盘不显示 —— iOS 不允许第三方 App 在
+ *   CarPlay 上弹系统键盘。只能自己画。
+ *
+ * 设计：
+ *   QWERTY 三行字母 + 一行功能键（退格 / 空格 / 清除）
+ *   车机屏 1066x480，每行 10 键，单键约 92x44，触摸友好。
+ *   输入内容直接拼进 UITextField.text，再触发搜索。
+ *
+ * 拼音：
+ *   中文歌名打不出来 —— 用 CFStringTransform 把汉字转拼音，
+ *   输入 "th" 也能命中「天后」。
+ */
+@interface MFCarPlayKeyboardView : UIView
+@property (nonatomic, weak) UITextField *targetField;
+@property (nonatomic, copy) void (^onChange)(NSString *text);
+- (instancetype)initWithTargetField:(UITextField *)field;
+@end
+
+@implementation MFCarPlayKeyboardView
+
+- (instancetype)initWithTargetField:(UITextField *)field {
+    self = [super initWithFrame:CGRectZero];
+    if (!self) {
+        return nil;
+    }
+    self.targetField = field;
+    self.backgroundColor = [UIColor colorWithRed:0.13 green:0.13 blue:0.14 alpha:1.0];
+    self.layer.cornerRadius = 8.0;
+    self.layer.masksToBounds = YES;
+
+    /* 三行字母 */
+    NSArray<NSArray<NSString *> *> *rows = @[
+        @[@"Q", @"W", @"E", @"R", @"T", @"Y", @"U", @"I", @"O", @"P"],
+        @[@"A", @"S", @"D", @"F", @"G", @"H", @"J", @"K", @"L"],
+        @[@"Z", @"X", @"C", @"V", @"B", @"N", @"M"],
+    ];
+
+    UIFont *keyFont = [UIFont systemFontOfSize:22.0];
+    UIColor *keyBg = [UIColor colorWithRed:0.25 green:0.25 blue:0.27 alpha:1.0];
+
+    UIView *prevRow = nil;
+    for (NSUInteger r = 0; r < rows.count; r++) {
+        UIView *row = [[UIView alloc] init];
+        row.translatesAutoresizingMaskIntoConstraints = NO;
+        [self addSubview:row];
+
+        UIView *prevKey = nil;
+        for (NSString *ch in rows[r]) {
+            UIButton *k = [UIButton buttonWithType:0];
+            [k setTitle:ch forState:0];
+            [k setTitleColor:[UIColor whiteColor] forState:0];
+            k.titleLabel.font = keyFont;
+            k.backgroundColor = keyBg;
+            k.layer.cornerRadius = 6.0;
+            k.translatesAutoresizingMaskIntoConstraints = NO;
+            [k addTarget:self action:@selector(onLetter:) forControlEvents:64];
+            [row addSubview:k];
+
+            [NSLayoutConstraint activateConstraints:@[
+                [k.topAnchor constraintEqualToAnchor:row.topAnchor],
+                [k.bottomAnchor constraintEqualToAnchor:row.bottomAnchor],
+                [k.widthAnchor constraintEqualToConstant:88],
+            ]];
+            if (prevKey) {
+                [NSLayoutConstraint activateConstraint:
+                    [k.leadingAnchor constraintEqualToAnchor:prevKey.trailingAnchor constant:8]];
+            } else {
+                [NSLayoutConstraint activateConstraint:
+                    [k.leadingAnchor constraintEqualToAnchor:row.leadingAnchor]];
+            }
+            prevKey = k;
+        }
+        if (prevKey) {
+            [NSLayoutConstraint activateConstraint:
+                [prevKey.trailingAnchor constraintLessThanOrEqualToAnchor:row.trailingAnchor]];
+        }
+
+        [NSLayoutConstraint activateConstraints:@[
+            [row.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:8],
+            [row.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-8],
+            [row.heightAnchor constraintEqualToConstant:46],
+        ]];
+        if (prevRow) {
+            [NSLayoutConstraint activateConstraint:
+                [row.topAnchor constraintEqualToAnchor:prevRow.bottomAnchor constant:8]];
+        } else {
+            [NSLayoutConstraint activateConstraint:
+                [row.topAnchor constraintEqualToAnchor:self.topAnchor constant:8]];
+        }
+        prevRow = row;
+    }
+
+    /* 第四行：退格 / 空格 / 清除 */
+    UIView *funcRow = [[UIView alloc] init];
+    funcRow.translatesAutoresizingMaskIntoConstraints = NO;
+    [self addSubview:funcRow];
+
+    UIButton *del = [self makeFuncButton:@"\u232B" action:@selector(onDelete)];
+    UIButton *space = [self makeFuncButton:@"空格" action:@selector(onSpace)];
+    UIButton *clr = [self makeFuncButton:@"清除" action:@selector(onClear)];
+    for (UIButton *b in @[del, space, clr]) {
+        [funcRow addSubview:b];
+        [NSLayoutConstraint activateConstraints:@[
+            [b.topAnchor constraintEqualToAnchor:funcRow.topAnchor],
+            [b.bottomAnchor constraintEqualToAnchor:funcRow.bottomAnchor],
+        ]];
+    }
+    [NSLayoutConstraint activateConstraints:@[
+        [del.leadingAnchor constraintEqualToAnchor:funcRow.leadingAnchor],
+        [del.widthAnchor constraintEqualToConstant:150],
+
+        [space.leadingAnchor constraintEqualToAnchor:del.trailingAnchor constant:8],
+        [space.trailingAnchor constraintEqualToAnchor:clr.leadingAnchor constant:-8],
+        [space.widthAnchor constraintGreaterThanOrEqualToConstant:200],
+
+        [clr.trailingAnchor constraintEqualToAnchor:funcRow.trailingAnchor],
+        [clr.widthAnchor constraintEqualToConstant:150],
+
+        [funcRow.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:8],
+        [funcRow.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-8],
+        [funcRow.heightAnchor constraintEqualToConstant:46],
+        [funcRow.topAnchor constraintEqualToAnchor:prevRow.bottomAnchor constant:8],
+        [funcRow.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-8],
+    ]];
+
+    return self;
+}
+
+- (UIButton *)makeFuncButton:(NSString *)title action:(SEL)action {
+    UIButton *b = [UIButton buttonWithType:0];
+    [b setTitle:title forState:0];
+    [b setTitleColor:[UIColor whiteColor] forState:0];
+    b.titleLabel.font = [UIFont systemFontOfSize:20.0];
+    b.backgroundColor = [UIColor colorWithRed:0.30 green:0.30 blue:0.33 alpha:1.0];
+    b.layer.cornerRadius = 6.0;
+    b.translatesAutoresizingMaskIntoConstraints = NO;
+    [b addTarget:self action:action forControlEvents:64];
+    return b;
+}
+
+- (void)commit:(NSString *)newText {
+    if (![newText isKindOfClass:[NSString class]]) {
+        return;
+    }
+    self.targetField.text = newText;
+    if (self.onChange) {
+        self.onChange(newText);
+    }
+}
+
+- (void)onLetter:(UIButton *)sender {
+    NSString *cur = self.targetField.text ?: @"";
+    [self commit:[cur stringByAppendingString:sender.titleLabel.text ?: @""]];
+}
+
+- (void)onDelete {
+    NSString *cur = self.targetField.text ?: @"";
+    if (cur.length == 0) {
+        return;
+    }
+    [self commit:[cur substringToIndex:cur.length - 1]];
+}
+
+- (void)onSpace {
+    NSString *cur = self.targetField.text ?: @"";
+    [self commit:[cur stringByAppendingString:@" "]];
+}
+
+- (void)onClear {
+    [self commit:@""];
+}
+
+@end
+
+/*
  * ============ 11142654：统一列表 Cell ============
  *
  * 为什么不用系统 cell.imageView：
@@ -347,6 +529,8 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
  *   └────────────────────────────────────┘
  */
 @interface MFCarPlayListCell : UITableViewCell
+/* 11142659：卡片容器（圆角背景，实现「每首歌之间有框」） */
+@property (nonatomic, strong) UIView *cardView;
 @property (nonatomic, strong) UIImageView *coverView;
 @property (nonatomic, strong) UILabel *mainLabel;
 @property (nonatomic, strong) UILabel *subLabel;
@@ -361,49 +545,83 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     if (!self) {
         return nil;
     }
-    self.backgroundColor = MFCarPlayBackgroundColor();
+
+    /*
+     * ============ 11142659：卡片样式 ============
+     *
+     * 用户要求「歌曲跟歌曲之间加个框」——参考截图，
+     * 每行是一个独立的圆角卡片，卡片之间留间隙。
+     *
+     * 结构：
+     *   cell (透明底)
+     *     └ cardView (深灰圆角 10，内缩 6/4)
+     *          ├ coverView (40x40 圆角 5)
+     *          ├ mainLabel
+     *          └ subLabel
+     *
+     * 关键点：
+     *   - cell 本身透明，露出背景色
+     *   - cardView 上下各留 4px，左右各留 6px -> 形成间隙
+     *   - separatorStyle 设为 None（改用卡片间隙分隔）
+     */
+    self.backgroundColor = [UIColor clearColor];
+    self.contentView.backgroundColor = [UIColor clearColor];
     self.selectionStyle = 0;
+
+    /* 卡片容器 */
+    self.cardView = [[UIView alloc] init];
+    self.cardView.backgroundColor = MFCarPlayCardColor();
+    self.cardView.layer.cornerRadius = 10.0;
+    self.cardView.layer.masksToBounds = YES;
+    self.cardView.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.contentView addSubview:self.cardView];
 
     /* 封面：40x40，圆角 5 */
     self.coverView = [[UIImageView alloc] init];
     self.coverView.contentMode = UIViewContentModeScaleAspectFill;
-    self.coverView.backgroundColor = [UIColor colorWithRed:0.15 green:0.15 blue:0.16 alpha:1.0];
+    self.coverView.backgroundColor = [UIColor colorWithRed:0.24 green:0.24 blue:0.26 alpha:1.0];
     self.coverView.layer.cornerRadius = 5.0;
     self.coverView.layer.masksToBounds = YES;
     self.coverView.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.contentView addSubview:self.coverView];
+    [self.cardView addSubview:self.coverView];
 
     /* 主标题 */
     self.mainLabel = [[UILabel alloc] init];
     self.mainLabel.font = [UIFont systemFontOfSize:19.0];
     self.mainLabel.textColor = [UIColor whiteColor];
     self.mainLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.contentView addSubview:self.mainLabel];
+    [self.cardView addSubview:self.mainLabel];
 
     /* 副标题 */
     self.subLabel = [[UILabel alloc] init];
     self.subLabel.font = [UIFont systemFontOfSize:15.0];
     self.subLabel.textColor = [UIColor colorWithRed:0.72 green:0.72 blue:0.74 alpha:1.0];
     self.subLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.contentView addSubview:self.subLabel];
+    [self.cardView addSubview:self.subLabel];
 
     /* 布局 */
     [NSLayoutConstraint activateConstraints:@[
-        /* 封面：左边距 12，垂直居中，40x40 */
-        [self.coverView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:12],
-        [self.coverView.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
+        /* 卡片：左右 6，上下 4（形成卡片间隙） */
+        [self.cardView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:6],
+        [self.cardView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-6],
+        [self.cardView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:4],
+        [self.cardView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-4],
+
+        /* 封面：卡片内左 12，垂直居中，40x40 */
+        [self.coverView.leadingAnchor constraintEqualToAnchor:self.cardView.leadingAnchor constant:12],
+        [self.coverView.centerYAnchor constraintEqualToAnchor:self.cardView.centerYAnchor],
         [self.coverView.widthAnchor constraintEqualToConstant:40],
         [self.coverView.heightAnchor constraintEqualToConstant:40],
 
-        /* 主标题：封面右侧 12，顶部对齐封面 */
+        /* 主标题 */
         [self.mainLabel.leadingAnchor constraintEqualToAnchor:self.coverView.trailingAnchor constant:12],
         [self.mainLabel.topAnchor constraintEqualToAnchor:self.coverView.topAnchor constant:-1],
-        [self.mainLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.contentView.trailingAnchor constant:-40],
+        [self.mainLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.cardView.trailingAnchor constant:-16],
 
-        /* 副标题：封面右侧 12，底部对齐封面 */
+        /* 副标题 */
         [self.subLabel.leadingAnchor constraintEqualToAnchor:self.mainLabel.leadingAnchor],
         [self.subLabel.bottomAnchor constraintEqualToAnchor:self.coverView.bottomAnchor constant:1],
-        [self.subLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.contentView.trailingAnchor constant:-40],
+        [self.subLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.cardView.trailingAnchor constant:-16],
     ]];
 
     return self;
@@ -456,6 +674,8 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 @property (nonatomic, strong) NSArray<NSDictionary *> *results;
 /* 11142655：当前搜索词，用于校验 JS 回传结果是否过期 */
 @property (nonatomic, copy) NSString *currentQuery;
+/* 11142658：自绘软键盘（CarPlay 不让弹系统键盘） */
+@property (nonatomic, strong) MFCarPlayKeyboardView *keyboardView;
 
 - (void)reloadSheets;
 @end
@@ -550,9 +770,14 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
                                               style:UITableViewStylePlain];
     self.table.dataSource = self;
     self.table.delegate = self;
-    self.table.rowHeight = 68.0;
-    self.table.backgroundColor = MFCarPlayBackgroundColor();
-    self.table.separatorColor = [UIColor whiteColor];
+    self.table.rowHeight = 76.0;
+    /* 表格透明，让卡片间隙透出页面背景 */
+    self.table.backgroundColor = [UIColor clearColor];
+    /*
+     * 11142659：不要分隔线 —— 改用卡片间隙（见 MFCarPlayListCell）。
+     * 分隔线 + 卡片圆角会显得脏。
+     */
+    self.table.separatorStyle = UITableViewCellSeparatorStyleNone;
     self.table.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.table];
 
@@ -763,6 +988,10 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         [self activateSearchKeyboard];
     } else {
         [self.searchField resignFirstResponder];
+        /* 11142658：切走时隐藏自绘键盘 */
+        if (self.keyboardView) {
+            self.keyboardView.hidden = YES;
+        }
     }
 
     /* 切 tab 时重载数据 */
@@ -794,33 +1023,45 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
  *   3) 每步都打日志，便于定位到底卡在哪
  */
 - (void)activateSearchKeyboard {
-    UIWindow *win = self.view.window;
+    /*
+     * ============ 11142658：改用自绘软键盘 ============
+     *
+     * 日志确证系统键盘走不通：
+     *   SEARCH kb: win=yes isKey=0
+     *   SEARCH kb: forced makeKeyWindow, now isKey=0    <- 强制失败
+     *   SEARCH kb: becomeFirstResponder -> 1 (isFirst=1) <- 控件成功但无键盘
+     *
+     * 所以不再尝试 becomeFirstResponder，直接在屏幕上画键盘。
+     */
+    if (!self.keyboardView) {
+        MFCarPlayKeyboardView *kb =
+            [[MFCarPlayKeyboardView alloc] initWithTargetField:self.searchField];
+        kb.translatesAutoresizingMaskIntoConstraints = NO;
+        [self.view addSubview:kb];
+        self.keyboardView = kb;
 
-    MFCarPlayLogBoth(@"SEARCH kb: win=%@ isKey=%d fieldAlpha=%.1f interaction=%d",
-          win ? @"yes" : @"nil",
-          (int)win.isKeyWindow,
-          self.searchField.alpha,
-          (int)self.searchField.userInteractionEnabled);
+        __weak __typeof(self) weakSelf = self;
+        kb.onChange = ^(NSString *text) {
+            __strong __typeof(weakSelf) s = weakSelf;
+            if (s) {
+                [s doSearch:text];
+            }
+        };
 
-    /* 1) 强制 key window */
-    if (win && !win.isKeyWindow) {
-        [win makeKeyWindow];
-        MFCarPlayLogBoth(@"SEARCH kb: forced makeKeyWindow, now isKey=%d",
-              (int)win.isKeyWindow);
+        /* 键盘贴在底部 */
+        [NSLayoutConstraint activateConstraints:@[
+            [kb.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
+            [kb.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
+            [kb.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor constant:-12],
+            [kb.heightAnchor constraintEqualToConstant:230],
+        ]];
+        [self.view bringSubviewToFront:kb];
     }
+    self.keyboardView.hidden = NO;
+    [self.view bringSubviewToFront:self.keyboardView];
 
-    /* 2) 三阶段重试 */
-    NSArray<NSNumber *> *delays = @[@0, @0.15, @0.4];
-    for (NSNumber *d in delays) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                     (int64_t)(d.doubleValue * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            BOOL ok = [self.searchField becomeFirstResponder];
-            MFCarPlayLogBoth(@"SEARCH kb: becomeFirstResponder after %.2fs -> %d (isFirst=%d)",
-                  d.doubleValue, (int)ok,
-                  (int)self.searchField.isFirstResponder);
-        });
-    }
+    /* 搜索时键盘占下半屏，表格上移让位 */
+    MFCarPlayLogBoth(@"SEARCH kb: using built-in keyboard (system kb blocked by CarPlay)");
 }
 
 - (void)reloadSheets {
@@ -994,9 +1235,14 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
                                               style:UITableViewStylePlain];
     self.table.dataSource = self;
     self.table.delegate = self;
-    self.table.rowHeight = 60.0;
-    self.table.backgroundColor = MFCarPlayBackgroundColor();
-    self.table.separatorColor = [UIColor whiteColor];
+    self.table.rowHeight = 76.0;
+    /* 表格透明，让卡片间隙透出页面背景 */
+    self.table.backgroundColor = [UIColor clearColor];
+    /*
+     * 11142659：不要分隔线 —— 改用卡片间隙（见 MFCarPlayListCell）。
+     * 分隔线 + 卡片圆角会显得脏。
+     */
+    self.table.separatorStyle = UITableViewCellSeparatorStyleNone;
     self.table.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.table];
 
@@ -2982,8 +3228,6 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 @implementation MFCarPlayWindowNowPlayingVC
 
 - (void)viewDidLoad {
-    MFAddBackButton(self);
-    MFAddBackButton(self);
     [super viewDidLoad];
 
     self.title = @"";
@@ -3169,6 +3413,23 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
           title, artist, album, duration, progress,
           np[@"queueCount"] ?: @0,
           artwork.length > 0 ? @"yes" : @"no");
+
+    /*
+     * ============ 11142658：返回按钮必须最后加 ============
+     *
+     * 用户反馈「播放页没有返回按钮」。
+     *
+     * 根因：之前在 viewDidLoad 开头就 MFAddBackButton，
+     * 但后面又依次 addSubview 了 backgroundImageView / dim /
+     * titleLabel / artistLabel / coverView / timeLabel，
+     * 这些后加的视图把按钮盖住了。
+     *
+     * MFAddBackButton 内部虽然有 bringSubviewToFront，
+     * 但那是在按钮刚添加时执行的 —— 后续新加的视图仍然在上面。
+     *
+     * 修法：放到 viewDidLoad 最末尾，所有视图都加完之后再添加。
+     */
+    MFAddBackButton(self);
 
     /*
      * 11142655：监听 JS 回传的播放状态。
