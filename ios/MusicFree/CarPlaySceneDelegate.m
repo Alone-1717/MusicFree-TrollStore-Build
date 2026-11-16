@@ -4033,13 +4033,6 @@ static dispatch_source_t sGCDPollTimer = NULL;
     self.backgroundImageView = [[UIImageView alloc] init];
     self.backgroundImageView.contentMode = UIViewContentModeScaleAspectFill;
     self.backgroundImageView.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.view addSubview:self.backgroundImageView];
-    [NSLayoutConstraint activateConstraints:@[
-        [self.backgroundImageView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
-        [self.backgroundImageView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-        [self.backgroundImageView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [self.backgroundImageView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-    ]];
 
     UIView *dim = [[UIView alloc] init];
     dim.backgroundColor = [UIColor blackColor];
@@ -4130,7 +4123,27 @@ static dispatch_source_t sGCDPollTimer = NULL;
     coverTap.numberOfTapsRequired = 1;
     coverTap.cancelsTouchesInView = NO;
     [self.coverView addGestureRecognizer:coverTap];
+    /*
+     * 11142686：按用户设计稿，封面不显示。
+     * 标题 + 歌手 + 歌词 同屏，没有封面区。
+     */
     [self.view addSubview:self.coverView];
+
+    /*
+     * ================================================================
+     * 11142687：封面与歌词共用同一区域（用户要求）
+     * ================================================================
+     *
+     * 布局：歌名 y=53 / 歌手 y=97 / 内容区 y=125~310 / 按钮 y=333 / 进度条 y=456
+     * 内容区默认显示封面，点击切换成歌词，再点切回封面。
+     */
+    [NSLayoutConstraint activateConstraints:@[
+        [self.coverView.topAnchor constraintEqualToAnchor:self.artistLabel.bottomAnchor constant:MFS(14)],
+        [self.coverView.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [self.coverView.widthAnchor constraintEqualToConstant:MFS(185)],
+        [self.coverView.heightAnchor constraintEqualToConstant:MFS(185)],
+    ]];
+    self.coverView.hidden = NO;   /* 默认显示封面 */
 
     /* 异步下载封面（失败就不显示，不影响其他控件） */
     if (artwork.length > 0) {
@@ -4266,70 +4279,60 @@ static dispatch_source_t sGCDPollTimer = NULL;
 
     /* ---------- 歌名（大字，居中） ---------- */
     [NSLayoutConstraint activateConstraints:@[
-        /* ---------- 歌名 ---------- */
-        [self.titleLabel.topAnchor constraintEqualToAnchor:v.topAnchor constant:MFS(12)],
-        [self.titleLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(140)],
-        [self.titleLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(140)],
-
-        /* ---------- 歌手 / 专辑 ---------- */
-        [self.artistLabel.topAnchor constraintEqualToAnchor:self.titleLabel.bottomAnchor constant:MFS(4)],
-        [self.artistLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(140)],
-        [self.artistLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(140)],
-
-        /* ---------- 封面 140×140 ---------- */
-        [self.coverView.topAnchor constraintEqualToAnchor:self.artistLabel.bottomAnchor constant:MFS(8)],
-        [self.coverView.centerXAnchor constraintEqualToAnchor:v.centerXAnchor],
-        [self.coverView.widthAnchor constraintEqualToConstant:MFS(140)],
-        [self.coverView.heightAnchor constraintEqualToConstant:MFS(140)],
-
-        /* ---------- 进度条 ---------- */
-        [self.progressView.topAnchor constraintEqualToAnchor:self.coverView.bottomAnchor constant:MFS(12)],
-        [self.progressView.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(80)],
-        [self.progressView.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(80)],
-        [self.progressView.heightAnchor constraintEqualToConstant:MFS(6)],
-
-        /* ---------- 时间：左当前 / 右总长 ---------- */
-        [self.timeLabel.topAnchor constraintEqualToAnchor:self.progressView.bottomAnchor constant:MFS(4)],
-        [self.timeLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(80)],
-        [self.timeLabel.widthAnchor constraintEqualToConstant:MFS(80)],
-
-        [self.durationLabel.topAnchor constraintEqualToAnchor:self.progressView.bottomAnchor constant:MFS(4)],
-        [self.durationLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(80)],
-        [self.durationLabel.widthAnchor constraintEqualToConstant:MFS(80)],
-
         /* ============================================================
-         * ---------- 按钮行：全部横向排列 ----------
-         *   [<<]  [>]  [>>]      [♡] [↻]
+         * 11142687：按 1.png 精确测量重排（1066x480）
+         *   歌名     y=53    36pt
+         *   歌手     y=97    20pt
+         *   内容区   y=125~310  封面185x185 或 歌词
+         *   按钮行   y=333~384  5 个横排
+         *   时间     y=395
+         *   进度条   y=456   高6
          * ============================================================ */
 
-        /* 播放键：居中偏左 100，给右侧功能键留位 */
-        [play.topAnchor constraintEqualToAnchor:self.timeLabel.bottomAnchor constant:MFS(10)],
-        [play.centerXAnchor constraintEqualToAnchor:v.centerXAnchor constant:-MFS(100)],
-        [play.widthAnchor constraintEqualToConstant:MFS(90)],
-        [play.heightAnchor constraintEqualToConstant:MFS(56)],
+        [self.titleLabel.topAnchor constraintEqualToAnchor:v.topAnchor constant:MFS(53)],
+        [self.titleLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(80)],
+        [self.titleLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(80)],
 
-        /* 上一首 */
-        [prev.trailingAnchor constraintEqualToAnchor:play.leadingAnchor constant:-MFS(16)],
+        [self.artistLabel.topAnchor constraintEqualToAnchor:self.titleLabel.bottomAnchor constant:MFS(6)],
+        [self.artistLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(80)],
+        [self.artistLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(80)],
+
+        [self.progressView.bottomAnchor constraintEqualToAnchor:v.bottomAnchor constant:-MFS(18)],
+        [self.progressView.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(40)],
+        [self.progressView.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(40)],
+        [self.progressView.heightAnchor constraintEqualToConstant:MFS(6)],
+
+        [self.timeLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(98)],
+        [self.timeLabel.widthAnchor constraintEqualToConstant:MFS(80)],
+        [self.timeLabel.bottomAnchor constraintEqualToAnchor:self.progressView.topAnchor constant:-MFS(28)],
+
+        [self.durationLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(98)],
+        [self.durationLabel.widthAnchor constraintEqualToConstant:MFS(80)],
+        [self.durationLabel.bottomAnchor constraintEqualToAnchor:self.progressView.topAnchor constant:-MFS(28)],
+
+        [play.centerXAnchor constraintEqualToAnchor:v.centerXAnchor constant:-MFS(8)],
+        [play.bottomAnchor constraintEqualToAnchor:self.timeLabel.topAnchor constant:-MFS(8)],
+        [play.widthAnchor constraintEqualToConstant:MFS(72)],
+        [play.heightAnchor constraintEqualToConstant:MFS(52)],
+
+        [prev.trailingAnchor constraintEqualToAnchor:play.leadingAnchor constant:-MFS(12)],
         [prev.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
-        [prev.widthAnchor constraintEqualToConstant:MFS(80)],
+        [prev.widthAnchor constraintEqualToConstant:MFS(70)],
         [prev.heightAnchor constraintEqualToConstant:MFS(52)],
 
-        /* 下一首 */
-        [next.leadingAnchor constraintEqualToAnchor:play.trailingAnchor constant:MFS(16)],
+        [next.leadingAnchor constraintEqualToAnchor:play.trailingAnchor constant:MFS(45)],
         [next.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
-        [next.widthAnchor constraintEqualToConstant:MFS(80)],
+        [next.widthAnchor constraintEqualToConstant:MFS(72)],
         [next.heightAnchor constraintEqualToConstant:MFS(52)],
 
-        /* ♡ 爱心：与播放键同一行，靠右 */
-        [self.favoriteButton.trailingAnchor constraintEqualToAnchor:self.repeatButton.leadingAnchor constant:-MFS(14)],
+        [self.favoriteButton.leadingAnchor constraintEqualToAnchor:next.trailingAnchor constant:MFS(32)],
         [self.favoriteButton.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
-        [self.favoriteButton.widthAnchor constraintEqualToConstant:MFS(52)],
+        [self.favoriteButton.widthAnchor constraintEqualToConstant:MFS(55)],
         [self.favoriteButton.heightAnchor constraintEqualToConstant:MFS(52)],
 
-        /* ↻ 循环：最右 */
-        [self.repeatButton.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(50)],
+        [self.repeatButton.leadingAnchor constraintEqualToAnchor:self.favoriteButton.trailingAnchor constant:MFS(18)],
         [self.repeatButton.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
-        [self.repeatButton.widthAnchor constraintEqualToConstant:MFS(52)],
+        [self.repeatButton.widthAnchor constraintEqualToConstant:MFS(55)],
         [self.repeatButton.heightAnchor constraintEqualToConstant:MFS(52)],
     ]];
 
@@ -5122,12 +5125,16 @@ static dispatch_source_t sGCDPollTimer = NULL;
     /* 11142672：歌词行高加大，车机屏上更好读 */
     /* 11142678：行高 52 -> 44，同样高度多显示一行 */
     /* 11142685：行高 44 -> 38，同样高度多显示一行 */
-    tb.rowHeight = MFS(38.0);
+    /* 11142686：行高 35（设计稿约 35px） */
+    tb.rowHeight = MFS(35.0);
     tb.backgroundColor = [UIColor clearColor];      /* 透出背景图 */
     tb.separatorColor = [UIColor clearColor];
     tb.showsVerticalScrollIndicator = NO;
     tb.translatesAutoresizingMaskIntoConstraints = NO;
-    tb.hidden = YES;
+    /*
+     * 11142686：按设计稿，歌词默认显示（不再靠点封面切换）。
+     */
+    tb.hidden = YES;   /* 11142687：默认显示封面，点封面切歌词 */
     [self.view addSubview:tb];
     self.lyricTable = tb;
 
@@ -5148,8 +5155,8 @@ static dispatch_source_t sGCDPollTimer = NULL;
          * 返回按钮在 top=14、高 44，即占到 y=58
          * 歌词表从 y=64 开始才不会挡住它
          */
-        [tb.topAnchor constraintEqualToAnchor:self.view.topAnchor constant:MFS(64)],
-        [tb.bottomAnchor constraintEqualToAnchor:self.progressView.topAnchor constant:-MFS(6)],
+        [tb.topAnchor constraintEqualToAnchor:self.artistLabel.bottomAnchor constant:MFS(14)],
+        [tb.bottomAnchor constraintEqualToAnchor:self.repeatButton.topAnchor constant:-MFS(10)],
         [tb.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:MFS(40)],
         [tb.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-MFS(40)],
     ]];
