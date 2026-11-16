@@ -92,11 +92,26 @@ const trackCache = new Map<string, any>();
  */
 function logToNative(msg: string) {
     /*
-     * 11142671：通过 setJsLog 桥方法写原生日志文件。
-     * 原生侧会把内容写进 carplay.log，方便排查。
+     * 11142671：改用 setJsLog 后日志能进 carplay.log
+     *
+     * 11142694：额外注入 globalThis.__MF_LOG__
+     * 证据：trackPlayer/index.ts 里调 NativeModules?.CarPlayBridge?.setJsLog?.()
+     *      从来没输出过（jsbundle 里字符串在，日志却完全没有）
+     *      -> 那个模块上下文拿不到桥
+     * 修法：把可用函数挂到 globalThis，任何模块都能调
      */
+    const text = String(msg ?? "");
     try {
-        NativeBridge?.setJsLog?.(String(msg ?? ""));
+        (globalThis as any).__MF_LOG__ = (m: string) => {
+            try {
+                NativeBridge?.setJsLog?.(String(m ?? ""));
+            } catch (e) { /* 忽略 */ }
+        };
+    } catch (e) {
+        /* 忽略 */
+    }
+    try {
+        NativeBridge?.setJsLog?.(text);
     } catch (e) {
         /* 忽略 */
     }

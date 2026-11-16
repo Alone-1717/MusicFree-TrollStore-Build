@@ -5343,17 +5343,67 @@ static dispatch_source_t sGCDPollTimer = NULL;
      * 原来 frame 高度只有 65%，label 靠顶 -> 偏上。
      * 无翻译时 textLabel 占满整个 cell；有翻译时上下分。
      */
-    /* 11142690：用局部变量避免直接读 detailTextLabel 的 text */
+    /*
+     * ================================================================
+     * 11142694：歌词垂直居中（精确计算，不依赖 frame 内部布局）
+     * ================================================================
+     *
+     * 原问题（代码证据）：
+     *   textLabel.frame = CGRectMake(0, 0, w, h)  <- frame 高 = cell 高
+     *   但 UILabel 的文本在 frame 内是"顶部开始换行"，
+     *   单行文本时实际高度只有一行字高（约 22px），
+     *   而 frame 高度是 35px -> 文字贴在 cell 顶部 -> 视觉偏上。
+     *
+     * 修法：
+     *   用 boundingRectWithSize 算出文本真实高度，
+     *   再用 (h - textH) / 2 得到垂直居中的 y。
+     */
     SEL txtSel = NSSelectorFromString(@"text");
     NSString *trText = ([cell.detailTextLabel respondsToSelector:txtSel]
         ? (NSString *)[cell.detailTextLabel performSelector:txtSel]
         : nil);
+
+    NSString *mainText = nil;
+    if ([cell.textLabel respondsToSelector:txtSel]) {
+        mainText = (NSString *)[cell.textLabel performSelector:txtSel];
+    }
+    UIFont *mainFont = cell.textLabel.font;
+    if (!mainFont) {
+        mainFont = MFFont(16.0);
+    }
+
     if (trText && trText.length > 0) {
-        cell.textLabel.frame = CGRectMake(0, 0, w, h * 0.62);
-        cell.detailTextLabel.frame = CGRectMake(0, h * 0.58, w, h * 0.40);
+        /* 有翻译：主歌词占上半，翻译在下半 */
+        CGFloat halfH = h * 0.58;
+        CGFloat mainH = halfH;
+
+        if (mainText.length > 0) {
+            CGRect br = [mainText boundingRectWithSize:CGSizeMake(w, CGFLOAT_MAX)
+                                               options:NSStringDrawingUsesLineFragmentOrigin
+                                            attributes:@{NSFontAttributeName: mainFont}
+                                               context:nil];
+            CGFloat actual = ceil(br.size.height);
+            if (actual < mainH) {
+                mainH = actual;
+            }
+        }
+        cell.textLabel.frame = CGRectMake(0, (halfH - mainH) / 2.0, w, mainH);
+        cell.detailTextLabel.frame = CGRectMake(0, halfH + (h - halfH) * 0.15, w, (h - halfH) * 0.7);
         cell.detailTextLabel.textAlignment = NSTextAlignmentCenter;
     } else {
-        cell.textLabel.frame = CGRectMake(0, 0, w, h);
+        /* 无翻译：整个 cell 垂直居中 */
+        CGFloat actualH = h;
+        if (mainText.length > 0) {
+            CGRect br = [mainText boundingRectWithSize:CGSizeMake(w, CGFLOAT_MAX)
+                                               options:NSStringDrawingUsesLineFragmentOrigin
+                                            attributes:@{NSFontAttributeName: mainFont}
+                                               context:nil];
+            CGFloat measured = ceil(br.size.height);
+            if (measured > 0 && measured < h) {
+                actualH = measured;
+            }
+        }
+        cell.textLabel.frame = CGRectMake(0, (h - actualH) / 2.0, w, actualH);
         cell.detailTextLabel.frame = CGRectZero;
     }
     cell.textLabel.textAlignment = NSTextAlignmentCenter;

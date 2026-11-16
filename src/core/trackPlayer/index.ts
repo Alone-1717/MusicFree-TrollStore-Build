@@ -189,6 +189,52 @@ class TrackPlayer extends EventEmitter<{
             ReactNativeTrackPlayer.addEventListener(
                 Event.PlaybackActiveTrackChanged,
                 async evt => {
+                    /*
+                     * ================================================================
+                     * 11142694：自动跳歌死循环保护
+                     * ================================================================
+                     *
+                     * 日志证据（19:48:46 ~ 19:49:05）：
+                     *   [CTRL] recv "next"   只出现 1 次
+                     *   [STATE] apply        出现 7 次（恋人/谁/孤单大街/夜色/秋天不回来/...）
+                     *   每次都是 pos=0/0 playing=0
+                     *
+                     * 机制：
+                     *   setTrackSource 队列 = [真实歌曲, fakeAudioUrl]
+                     *   音频加载失败(duration=0) -> 瞬间"播完" -> 自动进 index 1
+                     *   -> 本回调触发 -> skipToNext() -> 下一首同样失败 -> 死循环
+                     *
+                     * 修法：连续 3 次"加载即结束"就停下来，不再自动跳
+                     */
+                    if (
+                        evt.index === 1 &&
+                        evt.lastIndex === 0 &&
+                        evt.track?.url === TrackPlayer.fakeAudioUrl
+                    ) {
+                        // 检查上一首是否真的播过（duration>0）
+                        let lastDuration = 0;
+                        try {
+                            const pg = await ReactNativeTrackPlayer.getProgress();
+                            lastDuration = pg?.duration ?? 0;
+                        } catch (e) { /* ignore */ }
+                        if (!(lastDuration > 0)) {
+                            const g: any = globalThis as any;
+                            g.__mfZeroDurStreak = (g.__mfZeroDurStreak ?? 0) + 1;
+                            const n = g.__mfZeroDurStreak;
+                            try {
+                                const emit = typeof g.__MF_LOG__ === "function"
+                                    ? g.__MF_LOG__
+                                    : (m: string) => NativeModules?.CarPlayBridge?.setJsLog?.(m);
+                                emit(`[AUTOSKIP] blocked: duration=0 streak=${n}/3`);
+                            } catch (e) { /* ignore */ }
+                            if (n >= 3) {
+                                /* 连跳 3 次都是空音轨 -> 停止自动跳，避免无限循环 */
+                                return;
+                            }
+                        } else {
+                            (globalThis as any).__mfZeroDurStreak = 0;
+                        }
+                    }
                     if (
                         evt.index === 1 &&
                         evt.lastIndex === 0 &&
@@ -824,9 +870,20 @@ class TrackPlayer extends EventEmitter<{
                 " | dur=" + (anyTrack?.duration ?? "-") +
                 " | len=" + urlStr.length +
                 " | autoPlay=" + autoPlay;
-            NativeModules?.CarPlayBridge?.setJsLog?.(msg);
+            /* 11142694：优先用全局日志函数（NativeModules 在该上下文可能不可用） */
+            const g: any = globalThis as any;
+            const emit = (m: string) => {
+                if (typeof g.__MF_LOG__ === "function") {
+                    g.__MF_LOG__(m);
+                    return;
+                }
+                try {
+                    NativeModules?.CarPlayBridge?.setJsLog?.(m);
+                } catch (e) { /* ignore */ }
+            };
+            emit(msg);
             if (urlStr.length > 160) {
-                NativeModules?.CarPlayBridge?.setJsLog?.("[TRACK] url_tail=" + urlStr.slice(-80));
+                emit("[TRACK] url_tail=" + urlStr.slice(-80));
             }
         } catch (e) {
             /* 日志失败不影响播放 */
