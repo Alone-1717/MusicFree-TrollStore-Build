@@ -2108,6 +2108,49 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
  * 注意：成员变量一律用**参数传入的 interfaceController** 覆盖，
  * 绝不沿用上一次连接的旧 controller（旧的可能已被 invalidate）。
  */
+/*
+ * ================================================================
+ * 11142679：音频会话配置（窗口路径专用）
+ * ================================================================
+ *
+ * 严重问题：音频配置原来只在 attachInterfaceController: 里，
+ * 那是 CarPlay 模板 API 路径。我们用 UIWindowScene 自建窗口，
+ * 不会调用它 -> AVAudioSession 未配置 -> 播放失败 -> 崩溃重启。
+ *
+ * 日志证据：5 次启动间隔约 20 秒，playing 永远=0。
+ */
+- (void)mfSetupAudioSession {
+    @try {
+        AVAudioSession *session = [AVAudioSession sharedInstance];
+        NSError *err = nil;
+        BOOL catOK = NO;
+        NSString *usedOptions = @"(none)";
+
+        catOK = [session setCategory:AVAudioSessionCategoryPlayback
+                         withOptions:AVAudioSessionCategoryOptionAllowBluetoothA2DP
+                               error:&err];
+        if (catOK) {
+            usedOptions = @"AllowBluetoothA2DP";
+        } else {
+            err = nil;
+            catOK = [session setCategory:AVAudioSessionCategoryPlayback
+                             withOptions:0
+                                   error:&err];
+            if (catOK) {
+                usedOptions = @"none";
+            }
+        }
+
+        NSError *actErr = nil;
+        BOOL actOK = [session setActive:YES withOptions:0 error:&actErr];
+
+        MFCarPlayLogBoth(@"AVAudioSession(windows): catOK=%d opts=%@ actOK=%d cat=%@",
+              catOK, usedOptions, actOK, session.category ?: @"(nil)");
+    } @catch (NSException *e) {
+        MFCarPlayLogBoth(@"AVAudioSession(windows) threw: %@", e.reason);
+    }
+}
+
 - (void)attachInterfaceController:(CPInterfaceController *)interfaceController
                             scene:(CPTemplateApplicationScene *)scene
 {
@@ -2497,6 +2540,9 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
      * 初始化 2-5 秒，期间搜索只显示本地结果（有降级，不会卡）。
      */
     [self ensureReactNativeStarted];
+
+    /* 11142679：窗口路径配置音频会话 */
+    [self mfSetupAudioSession];
 
     MFCarPlayLogBoth(@"SCENE willConnect: WINDOW PATH ACTIVE window=%p "
                      @"frame=%@ sceneClass=%@ sheets=%lu (TABLE UI)",
@@ -4352,7 +4398,13 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 }
 
 - (void)onFavorite {
-    MFCarPlayLogBoth(@"[ACTION] favorite tapped (current title=%, fav=%d)");
+    /*
+     * 11142680：修复格式化字符串缺参数。
+     * 原来写的 "title=%, fav=%d" 没传参数，
+     * vsnprintf 会读栈上垃圾值 -> 可能崩溃或日志乱码。
+     */
+    MFCarPlayLogBoth(@"[ACTION] favorite tapped (btn=%@)",
+          self.favoriteButton.titleLabel.text ?: @"?");
     [MFCarPlayBridge emitControl:@"favorite"];
     /* 点击后 1 秒打印结果，验证状态是否变化 */
     __weak __typeof(self) weakSelf = self;
@@ -4455,10 +4507,30 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
                 [timer invalidate];
                 return;
             }
-            /* 页面已不在 window 上 -> 停 */
-            if (!s.view || !s.view.window) {
+            /*
+             * ============ 11142679：放宽存活判定 ============
+             *
+             * 日志证据：[POLL] tick 只出现 1 次就没了，
+             * 说明 view.window 在第 2 次 tick 时变成 nil，
+             * 导致定时器被 invalidate。
+             *
+             * CarPlay 的 UIWindowScene 里 view.window 可能不稳定。
+             * 改用更可靠的判定：是否还有 navigationController 或 superview。
+             */
+            if (!s.view) {
                 [timer invalidate];
                 s.progressPollTimer = nil;
+                MFCarPlayLogBoth(@"[POLL] stopped: view gone");
+                return;
+            }
+            /* 只要还在导航栈里就继续（不依赖 window） */
+            BOOL inStack = (s.navigationController != nil) ||
+                           (s.view.superview != nil) ||
+                           (s.view.window != nil);
+            if (!inStack) {
+                [timer invalidate];
+                s.progressPollTimer = nil;
+                MFCarPlayLogBoth(@"[POLL] stopped: not in hierarchy");
                 return;
             }
             [s pollProgressOnce];
@@ -4504,26 +4576,44 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 }
 
 - (void)mfPollProgressInner {
-    /* 11142677：改成实例变量，避免多实例共享计数 */
+    /* 11142679：计数 */
     self.pollCount++;
     if (self.pollCount % 10 == 1) {
         MFCarPlayLogBoth(@"[POLL] tick #%d showingLyric=%d lyricLines=%lu",
               self.pollCount, (int)self.showingLyric,
               (unsigned long)self.lyricLines.count);
     }
+
     /*
-     * ============ 11142672：不再依赖通知，直接读桥 ============
+     * ============ 11142679：三步独立执行 ============
      *
-     * 日志证据：
-     *   BRIDGE state: 152 次    <- 桥确实收到 JS 数据
-     *   NOWPLAYING state: 0 次   <- 播放页一次都没收到通知
+     * 之前的问题：
+     *   桥状态为空时 `return`，导致后面的歌词逻辑全部跳过。
+     *   日志证据：[LYRIC] poll 出现 0 次。
      *
-     * 说明 NSNotification 没送达（原因待查），
-     * 但桥里的 nowPlayingStateData 是有的。
-     *
-     * 所以改成：每秒主动向桥拉取最新状态，直接更新 UI。
-     * 这比等通知可靠 —— 不依赖通知中心，不依赖线程。
+     * 现在：三个步骤各自 @try，互不影响。
      */
+    @try {
+        [self pollStateStep];
+    } @catch (NSException *e) {
+        MFCarPlayLogBoth(@"[POLL] state step EXCEPTION: %@", e.reason);
+    }
+
+    @try {
+        [self pollLyricFromBridge];
+    } @catch (NSException *e) {
+        MFCarPlayLogBoth(@"[POLL] lyric step EXCEPTION: %@", e.reason);
+    }
+
+    @try {
+        [self refreshLyricHighlight];
+    } @catch (NSException *e) {
+        MFCarPlayLogBoth(@"[POLL] highlight step EXCEPTION: %@", e.reason);
+    }
+}
+
+/* 11142679：单独的状态轮询步骤（空状态直接跳过，不影响歌词） */
+- (void)pollStateStep {
     MFCarPlayBridge *bridge = [MFCarPlayBridge shared];
     if (!bridge) {
         return;
@@ -4532,23 +4622,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     if (![st isKindOfClass:[NSDictionary class]] || st.count == 0) {
         return;
     }
-
-    /* 直接用桥的数据更新 UI（复用同一个处理函数） */
     [self applyStateToUI:st];
-
-    /*
-     * ============ 11142674：歌词也走轮询 ============
-     *
-     * 严重问题：handleLyricUpdate 只靠 NSNotification，
-     * 但日志证明通知收不到（NOWPLAYING state: 0 次）。
-     * 所以切歌后歌词永远不更新。
-     *
-     * 修法：轮询时也读桥里的歌词，行数变了就重载表格。
-     */
-    [self pollLyricFromBridge];
-
-    /* 刷新歌词高亮 */
-    [self refreshLyricHighlight];
 }
 
 /*

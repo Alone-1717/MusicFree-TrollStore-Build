@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142678"
+EXPECTED_VERSION = "11142680"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -114,7 +114,6 @@ BINARY_MARKERS = [
     b"ROOT search '%@' -> local=%lu jsReady=%d",
     b"ROOT search: JS returned %lu results for '%@'",
     b"BRIDGE got %lu lyric lines",
-    b"NOWPLAYING toggle lyric mode -> %d",
     b"NOWPLAYING lyric table built: %lu lines",
     b"NOWPLAYING lyric updated: %lu lines",
     b"SEARCH kb: using built-in keyboard (system kb blocked by CarPlay)",
@@ -157,8 +156,13 @@ BINARY_MARKERS = [
     b"[KEYBOARD] letter",
     b"[KEYBOARD] hidden by bg tap",
     b"[SEEK] tap at %.2f",
-    b"[SEEK] seeking to",
     b"lyric table built: %lu lines",
+    b"AVAudioSession(windows): catOK=%d",
+    b"[SKIP] next ->",
+    b"[SKIP] prev ->",
+    b"favorite tapped (btn=%@)",
+    b"[POLL] stopped: not in hierarchy",
+    b"[POLL] state step EXCEPTION: %@",
 ]
 
 # 旧版已证伪/致命的标记，产物里绝不能再出现

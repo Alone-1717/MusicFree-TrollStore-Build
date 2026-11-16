@@ -305,9 +305,21 @@ async function handleControl(action: string) {
                 break;
             case "next":
                 await TrackPlayer.skipToNext();
+                /*
+                 * 11142680：切歌后主动推送新曲目信息。
+                 * 原来只靠 500ms ticker 兜底，最多延迟半秒，
+                 * 用户会看到「歌换了但封面标题还没变」。
+                 */
+                pushNowPlaying(TrackPlayer.currentMusic);
+                pushNowPlayingState();
+                logToNative(`[SKIP] next -> ${TrackPlayer.currentMusic?.title ?? "?"}`);
                 break;
             case "prev":
                 await TrackPlayer.skipToPrevious();
+                /* 11142680：同样主动推送 */
+                pushNowPlaying(TrackPlayer.currentMusic);
+                pushNowPlayingState();
+                logToNative(`[SKIP] prev -> ${TrackPlayer.currentMusic?.title ?? "?"}`);
                 break;
 
             /* ============ 11142661：爱心 / 循环 / 音质 ============ */
