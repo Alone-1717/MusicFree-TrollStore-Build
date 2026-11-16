@@ -38,6 +38,36 @@
 #if DEBUG
   return [[RCTBundleURLProvider sharedSettings] jsBundleURLForBundleRoot:@".expo/.virtual-metro-entry"];
 #else
+  /*
+   * ================================================================
+   * 11142701：JS 热更新支持
+   * ================================================================
+   *
+   * 背景：
+   *   TrollStore 装 App 后，改包内 main.jsbundle 要走 Filza，
+   *   而且有签名校验风险。
+   *   改成优先读沙盒 Documents/main.jsbundle：
+   *     - 用系统「文件」App 就能拖进去（UIFileSharingEnabled=True）
+   *     - 不动包内文件，零签名风险
+   *     - 杀进程重开即生效
+   *
+   * 优先级：
+   *   1) Documents/main.jsbundle      <- 热更用
+   *   2) 包内 main.jsbundle            <- 回退
+   *
+   * 回滚：删掉 Documents/main.jsbundle 即恢复包内版本。
+   */
+  NSString *docDir = [NSSearchPathForDirectoriesInDomains(
+      NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+  if (docDir.length > 0) {
+    NSString *hotPath = [docDir stringByAppendingPathComponent:@"main.jsbundle"];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:hotPath]) {
+      NSURL *hotURL = [NSURL fileURLWithPath:hotPath];
+      NSLog(@"[HOT] loading JS from Documents: %@", hotPath);
+      return hotURL;
+    }
+  }
+  NSLog(@"[HOT] loading JS from bundle (no hot update)");
   return [[NSBundle mainBundle] URLForResource:@"main" withExtension:@"jsbundle"];
 #endif
 }

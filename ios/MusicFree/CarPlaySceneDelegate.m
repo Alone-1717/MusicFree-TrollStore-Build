@@ -333,6 +333,81 @@ static UIColor *MFCarPlayAccentColor(void) {
  */
 /*
  * ================================================================
+ * 11142701：布局热更（Documents/layout.json）
+ * ================================================================
+ *
+ * 目的：改布局不用重新构建。
+ *   1) 把 layout.json 拖进 MusicFree 的 Documents
+ *   2) 杀掉 App 重开
+ *   3) 布局按新数值生效
+ *
+ * 默认值 = 当前代码里的数值，所以**没有 json 时行为完全不变**。
+ *
+ * 可用键（数值都会再乘屏幕缩放 MFS）：
+ *   titleTop, artistGap, coverGap, coverSize,
+ *   progressBottom, progressSide, progressHeight,
+ *   timeSide, timeGap,
+ *   playOffsetX, playBottom, playW, playH,
+ *   prevGap, prevW, prevH,
+ *   nextGap, nextW,
+ *   favGap, favW, favH,
+ *   repGap, repW, repH,
+ *   lyricSide, lyricRowHeight
+ */
+static NSDictionary *sMFHotLayout = nil;
+static BOOL sMFHotLayoutLoaded = NO;
+
+static NSDictionary *MFHotLayout(void) {
+    if (sMFHotLayoutLoaded) {
+        return sMFHotLayout;
+    }
+    sMFHotLayoutLoaded = YES;
+    @try {
+        NSString *docDir = [NSSearchPathForDirectoriesInDomains(
+            NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+        if (docDir.length == 0) {
+            return nil;
+        }
+        NSString *p = [docDir stringByAppendingPathComponent:@"layout.json"];
+        if (![[NSFileManager defaultManager] fileExistsAtPath:p]) {
+            return nil;
+        }
+        NSData *d = [NSData dataWithContentsOfFile:p];
+        if (d.length == 0) {
+            return nil;
+        }
+        id obj = [NSJSONSerialization JSONObjectWithData:d options:0 error:NULL];
+        if ([obj isKindOfClass:[NSDictionary class]]) {
+            sMFHotLayout = (NSDictionary *)obj;
+            MFCarPlayLogBoth(@"[HOT] layout.json loaded: %lu keys",
+                             (unsigned long)sMFHotLayout.count);
+        }
+    } @catch (NSException *e) {
+        MFCarPlayLogBoth(@"[HOT] layout.json parse failed: %@", e.reason);
+    }
+    return sMFHotLayout;
+}
+
+/*
+ * 读一个布局数值，读不到返回默认值。
+ * 注意：返回值已经乘过缩放，直接用于约束。
+ */
+static CGFloat MFL(NSString *key, CGFloat fallback) {
+    NSDictionary *cfg = MFHotLayout();
+    if (cfg) {
+        id v = cfg[key];
+        if ([v isKindOfClass:[NSNumber class]]) {
+            CGFloat n = (CGFloat)[(NSNumber *)v doubleValue];
+            if (n > 0) {
+                return MFS(n);
+            }
+        }
+    }
+    return MFS(fallback);
+}
+
+/*
+ * ================================================================
  * 11142699：绘制"暂停"图标（两根圆角竖条）
  * ================================================================
  * 用户要求：不要 emoji 字符，要图片里那种两竖线图形。
@@ -4251,10 +4326,10 @@ static dispatch_source_t sGCDPollTimer = NULL;
      * 内容区默认显示封面，点击切换成歌词，再点切回封面。
      */
     [NSLayoutConstraint activateConstraints:@[
-        [self.coverView.topAnchor constraintEqualToAnchor:self.artistLabel.bottomAnchor constant:MFS(14)],
+        [self.coverView.topAnchor constraintEqualToAnchor:self.artistLabel.bottomAnchor constant:MFL(@"coverGap", 14)],
         [self.coverView.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
-        [self.coverView.widthAnchor constraintEqualToConstant:MFS(185)],
-        [self.coverView.heightAnchor constraintEqualToConstant:MFS(185)],
+        [self.coverView.widthAnchor constraintEqualToConstant:MFL(@"coverSize", 185)],
+        [self.coverView.heightAnchor constraintEqualToConstant:MFL(@"coverSize", 185)],
     ]];
     self.coverView.hidden = NO;   /* 默认显示封面 */
 
@@ -4389,9 +4464,9 @@ static dispatch_source_t sGCDPollTimer = NULL;
      *   4) 所有元素垂直居中排布
      *
      * 高度累加（屏幕 480）：
-     *   12 + 36 + 4 + 24 + 8 + 160 + 10 + 6 + 6 + 18 + 8 + 64 + 6 + 40 + 8 = 410
-     *   余量 70px
+     *   12 + 36 + 4 + 24 + 8 + 160 + 10 + 6 + 6 + 18 + 8 + 64 + 6 + 4
      */
+
     UIView *v = self.view;
 
     /* ---------- 歌名（大字，居中） ---------- */
@@ -4406,62 +4481,62 @@ static dispatch_source_t sGCDPollTimer = NULL;
          *   进度条   y=456   高6
          * ============================================================ */
 
-        [self.titleLabel.topAnchor constraintEqualToAnchor:v.topAnchor constant:MFS(53)],
+        [self.titleLabel.topAnchor constraintEqualToAnchor:v.topAnchor constant:MFL(@"titleTop", 53)],
         [self.titleLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(80)],
         [self.titleLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(80)],
 
-        [self.artistLabel.topAnchor constraintEqualToAnchor:self.titleLabel.bottomAnchor constant:MFS(6)],
+        [self.artistLabel.topAnchor constraintEqualToAnchor:self.titleLabel.bottomAnchor constant:MFL(@"artistGap", 6)],
         [self.artistLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(80)],
         [self.artistLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(80)],
 
-        [self.progressView.bottomAnchor constraintEqualToAnchor:v.bottomAnchor constant:-MFS(18)],
-        [self.progressView.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(40)],
-        [self.progressView.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(40)],
-        [self.progressView.heightAnchor constraintEqualToConstant:MFS(6)],
+        [self.progressView.bottomAnchor constraintEqualToAnchor:v.bottomAnchor constant:-MFL(@"progressBottom", 18)],
+        [self.progressView.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFL(@"progressSide", 40)],
+        [self.progressView.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFL(@"progressSide", 40)],
+        [self.progressView.heightAnchor constraintEqualToConstant:MFL(@"progressHeight", 6)],
 
-        [self.timeLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(98)],
-        [self.timeLabel.widthAnchor constraintEqualToConstant:MFS(80)],
-        [self.timeLabel.bottomAnchor constraintEqualToAnchor:self.progressView.topAnchor constant:-MFS(28)],
+        [self.timeLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFL(@"timeSide", 98)],
+        [self.timeLabel.widthAnchor constraintEqualToConstant:MFL(@"timeWidth", 80)],
+        [self.timeLabel.bottomAnchor constraintEqualToAnchor:self.progressView.topAnchor constant:-MFL(@"timeGap", 28)],
 
-        [self.durationLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(98)],
-        [self.durationLabel.widthAnchor constraintEqualToConstant:MFS(80)],
-        [self.durationLabel.bottomAnchor constraintEqualToAnchor:self.progressView.topAnchor constant:-MFS(28)],
+        [self.durationLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFL(@"timeSide", 98)],
+        [self.durationLabel.widthAnchor constraintEqualToConstant:MFL(@"timeWidth", 80)],
+        [self.durationLabel.bottomAnchor constraintEqualToAnchor:self.progressView.topAnchor constant:-MFL(@"timeGap", 28)],
 
         /* ---------- 播放键（基准） ---------- */
         /* 11142689：播放键真正居中（去掉 -8 偏移） */
         [play.centerXAnchor constraintEqualToAnchor:v.centerXAnchor],
-        [play.bottomAnchor constraintEqualToAnchor:self.timeLabel.topAnchor constant:-MFS(8)],
-        [play.widthAnchor constraintEqualToConstant:MFS(72)],
-        [play.heightAnchor constraintEqualToConstant:MFS(52)],
+        [play.bottomAnchor constraintEqualToAnchor:self.timeLabel.topAnchor constant:-MFL(@"playBottom", 8)],
+        [play.widthAnchor constraintEqualToConstant:MFL(@"playW", 72)],
+        [play.heightAnchor constraintEqualToConstant:MFL(@"playH", 52)],
 
         /* ---------- 上一首：间隔 12 ---------- */
-        [prev.trailingAnchor constraintEqualToAnchor:play.leadingAnchor constant:-MFS(12)],
+        [prev.trailingAnchor constraintEqualToAnchor:play.leadingAnchor constant:-MFL(@"prevGap", 12)],
         [prev.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
-        [prev.widthAnchor constraintEqualToConstant:MFS(70)],
-        [prev.heightAnchor constraintEqualToConstant:MFS(52)],
+        [prev.widthAnchor constraintEqualToConstant:MFL(@"prevW", 70)],
+        [prev.heightAnchor constraintEqualToConstant:MFL(@"prevH", 52)],
 
         /*
          * 11142688：下一首间隔与上一首一致（12）
          * 原来 45 太宽，用户要求改小
          */
-        [next.leadingAnchor constraintEqualToAnchor:play.trailingAnchor constant:MFS(12)],
+        [next.leadingAnchor constraintEqualToAnchor:play.trailingAnchor constant:MFL(@"nextGap", 12)],
         [next.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
-        [next.widthAnchor constraintEqualToConstant:MFS(70)],
-        [next.heightAnchor constraintEqualToConstant:MFS(52)],
+        [next.widthAnchor constraintEqualToConstant:MFL(@"nextW", 70)],
+        [next.heightAnchor constraintEqualToConstant:MFL(@"nextH", 52)],
 
         /*
          * 11142688：爱心/模式缩小一半（宽高 26），底部与其它按钮平齐
          * 用 bottom 对齐 play.bottom，不是 centerY
          */
-        [self.favoriteButton.leadingAnchor constraintEqualToAnchor:next.trailingAnchor constant:MFS(28)],
+        [self.favoriteButton.leadingAnchor constraintEqualToAnchor:next.trailingAnchor constant:MFL(@"favGap", 28)],
         [self.favoriteButton.bottomAnchor constraintEqualToAnchor:play.bottomAnchor],
-        [self.favoriteButton.widthAnchor constraintEqualToConstant:MFS(28)],
-        [self.favoriteButton.heightAnchor constraintEqualToConstant:MFS(26)],
+        [self.favoriteButton.widthAnchor constraintEqualToConstant:MFL(@"favW", 28)],
+        [self.favoriteButton.heightAnchor constraintEqualToConstant:MFL(@"favH", 26)],
 
-        [self.repeatButton.leadingAnchor constraintEqualToAnchor:self.favoriteButton.trailingAnchor constant:MFS(14)],
+        [self.repeatButton.leadingAnchor constraintEqualToAnchor:self.favoriteButton.trailingAnchor constant:MFL(@"repGap", 14)],
         [self.repeatButton.bottomAnchor constraintEqualToAnchor:play.bottomAnchor],
-        [self.repeatButton.widthAnchor constraintEqualToConstant:MFS(28)],
-        [self.repeatButton.heightAnchor constraintEqualToConstant:MFS(26)],
+        [self.repeatButton.widthAnchor constraintEqualToConstant:MFL(@"repW", 28)],
+        [self.repeatButton.heightAnchor constraintEqualToConstant:MFL(@"repH", 26)],
     ]];
 
     self.lastRenderedTitle = title;
@@ -5290,7 +5365,7 @@ static dispatch_source_t sGCDPollTimer = NULL;
     /* 11142678：行高 52 -> 44，同样高度多显示一行 */
     /* 11142685：行高 44 -> 38，同样高度多显示一行 */
     /* 11142686：行高 35（设计稿约 35px） */
-    tb.rowHeight = MFS(35.0);
+    tb.rowHeight = MFL(@"lyricRowHeight", 35.0);
     tb.backgroundColor = [UIColor clearColor];      /* 透出背景图 */
     tb.separatorColor = [UIColor clearColor];
     tb.showsVerticalScrollIndicator = NO;
@@ -5322,8 +5397,8 @@ static dispatch_source_t sGCDPollTimer = NULL;
         /* 11142697：歌词表与封面完全重合（历史版 8232abf3 的正确做法） */
         [tb.topAnchor constraintEqualToAnchor:self.coverView.topAnchor],
         [tb.bottomAnchor constraintEqualToAnchor:self.coverView.bottomAnchor],
-        [tb.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:MFS(40)],
-        [tb.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-MFS(40)],
+        [tb.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:MFL(@"lyricSide", 40)],
+        [tb.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-MFL(@"lyricSide", 40)],
     ]];
 
     /*
