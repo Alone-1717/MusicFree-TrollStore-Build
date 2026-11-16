@@ -831,6 +831,9 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 @property (nonatomic, strong) MFCarPlayKeyboardView *keyboardView;
 /* 11142667：搜索防抖（避免每次按键都 reloadData 导致闪退） */
 @property (nonatomic, strong) NSTimer *searchDebounceTimer;
+/* 11142669：表格顶部两个约束，按 tab 切换 */
+@property (nonatomic, strong) NSLayoutConstraint *tableTopNormal;
+@property (nonatomic, strong) NSLayoutConstraint *tableTopSearch;
 /* 11142662：榜单数据 */
 @property (nonatomic, strong) NSArray<NSDictionary *> *topLists;
 
@@ -884,6 +887,20 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 @property (nonatomic, assign) NSInteger currentLyricIndex;  /* 当前高亮行 */
 @property (nonatomic, assign) BOOL showingLyric;            /* 是否在歌词模式 */
 @property (nonatomic, assign) double currentProgress;       /* 当前播放秒数（JS 推送） */
+/* 11142669：已渲染的曲名，用于检测切歌 */
+@property (nonatomic, copy) NSString *lastRenderedTitle;
+/*
+ * 11142669：原生轮询定时器。
+ *
+ * 为什么需要：
+ *   日志证实 JS 的 500ms ticker 从未推送过状态
+ *   （BRIDGE state: 零次出现）。
+ *   所以原生自己按 1 秒轮询 MMKV，至少进度条能动。
+ *
+ * 这不能替代 JS 推送（拿不到 isPlaying/repeat/quality），
+ * 但能保证进度条和时间文字是活的。
+ */
+@property (nonatomic, strong) NSTimer *progressPollTimer;
 
 /* ============ 11142661：爱心 / 循环 / 音质 ============ */
 @property (nonatomic, strong) UIButton *favoriteButton;
@@ -960,6 +977,11 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
      * 分隔线 + 卡片圆角会显得脏。
      */
     self.table.separatorStyle = UITableViewCellSeparatorStyleNone;
+    /*
+     * 11142669：去掉右侧滚动指示器（用户截图里的 ^ v 箭头）。
+     * 车机上滚动条没用，反而碍眼。
+     */
+    self.table.showsVerticalScrollIndicator = NO;
     self.table.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.table];
 
@@ -1048,8 +1070,20 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     [cons addObject:[self.searchField.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-100]];
     [cons addObject:[self.searchField.heightAnchor constraintEqualToConstant:MFS(48)]];
 
-    /* 表格始终从 tabBar 下方开始（搜索框浮在其上，不挤占布局） */
-    [cons addObject:[self.table.topAnchor constraintEqualToAnchor:self.tabBar.bottomAnchor constant:8]];
+    /*
+     * 11142669：表格位置按 tab 动态调整。
+     *
+     * 用户反馈「搜索框会挡住歌曲列表」。
+     * 现在默认在 tabBar 下方，搜索 tab 时下移到搜索框下方。
+     * 用两个约束 + 优先级切换实现。
+     */
+    self.tableTopNormal =
+        [self.table.topAnchor constraintEqualToAnchor:self.tabBar.bottomAnchor constant:8];
+    self.tableTopSearch =
+        [self.table.topAnchor constraintEqualToAnchor:self.searchField.bottomAnchor constant:8];
+    self.tableTopNormal.active = YES;
+    self.tableTopSearch.active = NO;
+    [cons addObject:self.tableTopNormal];
     [cons addObject:[self.table.bottomAnchor constraintEqualToAnchor:v.bottomAnchor]];
     [cons addObject:[self.table.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:16]];
     [cons addObject:[self.table.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-16]];
@@ -1058,6 +1092,18 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
     [self refreshTabAppearance];
     [self reloadSheets];
+
+    /*
+     * 11142669：点空白处收起键盘。
+     *
+     * 用户要求「点击空白位置键盘应该消失」。
+     * 给整个 view 加点击手势，点非控件区域时收键盘。
+     * cancelsTouchesInView = NO 保证不干扰按钮和表格点击。
+     */
+    UITapGestureRecognizer *bgTap =
+        [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(onBackgroundTap)];
+    bgTap.cancelsTouchesInView = NO;
+    [self.view addGestureRecognizer:bgTap];
 
     /* 11142655：监听 JS 回传的搜索结果 */
     [[NSNotificationCenter defaultCenter] addObserver:self
@@ -1224,10 +1270,16 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
     if (showSearch) {
         [self.view bringSubviewToFront:self.searchField];
+        /* 11142669：表格下移到搜索框下方，避免被遮住 */
+        self.tableTopNormal.active = NO;
+        self.tableTopSearch.active = YES;
         [self activateSearchKeyboard];
     } else {
         [self.searchField resignFirstResponder];
-        /* 11142658：切走时隐藏自绘键盘 */
+        /* 11142669：表格回到顶部 */
+        self.tableTopSearch.active = NO;
+        self.tableTopNormal.active = YES;
+        /* 切走时隐藏自绘键盘 */
         if (self.keyboardView) {
             self.keyboardView.hidden = YES;
         }
@@ -1271,6 +1323,17 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
  *   2) 三阶段重试唤起（0ms / 150ms / 400ms），应对时序
  *   3) 每步都打日志，便于定位到底卡在哪
  */
+/*
+ * 11142669：点空白收起键盘。
+ * 只隐藏自绘键盘，不改变 tab。
+ */
+- (void)onBackgroundTap {
+    if (self.keyboardView && !self.keyboardView.hidden) {
+        self.keyboardView.hidden = YES;
+        MFCarPlayLogBoth(@"ROOT bg tap -> hide keyboard");
+    }
+}
+
 - (void)activateSearchKeyboard {
     /*
      * ============ 11142658：改用自绘软键盘 ============
@@ -1620,6 +1683,11 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
      * 分隔线 + 卡片圆角会显得脏。
      */
     self.table.separatorStyle = UITableViewCellSeparatorStyleNone;
+    /*
+     * 11142669：去掉右侧滚动指示器（用户截图里的 ^ v 箭头）。
+     * 车机上滚动条没用，反而碍眼。
+     */
+    self.table.showsVerticalScrollIndicator = NO;
     self.table.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.table];
 
@@ -3641,6 +3709,11 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     self.table.rowHeight = MFS(76.0);
     self.table.backgroundColor = [UIColor clearColor];
     self.table.separatorStyle = UITableViewCellSeparatorStyleNone;
+    /*
+     * 11142669：去掉右侧滚动指示器（用户截图里的 ^ v 箭头）。
+     * 车机上滚动条没用，反而碍眼。
+     */
+    self.table.showsVerticalScrollIndicator = NO;
     self.table.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.table];
 
@@ -3943,7 +4016,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     [NSLayoutConstraint activateConstraints:@[
         /* 三个按钮：进度条下方，右对齐 */
         [self.qualityButton.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-40],
-        [self.qualityButton.topAnchor constraintEqualToAnchor:self.progressView.bottomAnchor constant:10],
+        [self.qualityButton.topAnchor constraintEqualToAnchor:self.progressView.bottomAnchor constant:6],
         [self.qualityButton.widthAnchor constraintEqualToConstant:MFS(56)],
         [self.qualityButton.heightAnchor constraintEqualToConstant:MFS(44)],
 
@@ -3962,7 +4035,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     UIView *v = self.view;
     [NSLayoutConstraint activateConstraints:@[
         /* 歌名 */
-        [self.titleLabel.topAnchor constraintEqualToAnchor:v.topAnchor constant:58],
+        [self.titleLabel.topAnchor constraintEqualToAnchor:v.topAnchor constant:44],
         [self.titleLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:24],
         [self.titleLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-24],
 
@@ -3972,29 +4045,29 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         [self.artistLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-24],
 
         /* 封面：居中，220x220 */
-        [self.coverView.topAnchor constraintEqualToAnchor:self.artistLabel.bottomAnchor constant:24],
+        [self.coverView.topAnchor constraintEqualToAnchor:self.artistLabel.bottomAnchor constant:12],
         [self.coverView.centerXAnchor constraintEqualToAnchor:v.centerXAnchor],
-        [self.coverView.widthAnchor constraintEqualToConstant:MFS(220)],
-        [self.coverView.heightAnchor constraintEqualToConstant:MFS(220)],
+        [self.coverView.widthAnchor constraintEqualToConstant:MFS(168)],
+        [self.coverView.heightAnchor constraintEqualToConstant:MFS(168)],
 
         /* 上一首 / 播放 / 下一首：底部横排 */
         [play.centerXAnchor constraintEqualToAnchor:v.centerXAnchor],
-        [play.topAnchor constraintEqualToAnchor:self.coverView.bottomAnchor constant:28],
+        [play.topAnchor constraintEqualToAnchor:self.coverView.bottomAnchor constant:16],
         [play.widthAnchor constraintEqualToConstant:MFS(120)],
-        [play.heightAnchor constraintEqualToConstant:MFS(64)],
+        [play.heightAnchor constraintEqualToConstant:MFS(56)],
 
         [prev.trailingAnchor constraintEqualToAnchor:play.leadingAnchor constant:-24],
         [prev.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
         [prev.widthAnchor constraintEqualToConstant:MFS(110)],
-        [prev.heightAnchor constraintEqualToConstant:MFS(64)],
+        [prev.heightAnchor constraintEqualToConstant:MFS(56)],
 
         [next.leadingAnchor constraintEqualToAnchor:play.trailingAnchor constant:24],
         [next.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
         [next.widthAnchor constraintEqualToConstant:MFS(110)],
-        [next.heightAnchor constraintEqualToConstant:MFS(64)],
+        [next.heightAnchor constraintEqualToConstant:MFS(56)],
 
         /* 进度条：按钮下方，左右留边 */
-        [self.progressView.topAnchor constraintEqualToAnchor:play.bottomAnchor constant:18],
+        [self.progressView.topAnchor constraintEqualToAnchor:play.bottomAnchor constant:10],
         [self.progressView.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:40],
         [self.progressView.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-40],
         [self.progressView.heightAnchor constraintEqualToConstant:MFS(4)],
@@ -4005,6 +4078,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         [self.timeLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-24],
     ]];
 
+    self.lastRenderedTitle = title;
     MFCarPlayLogBoth(@"NOWPLAYING VC: title=%@ artist=%@ album=%@ duration=%.0f "
                      @"progress=%.0f queue=%@ artwork=%@",
           title, artist, album, duration, progress,
@@ -4027,6 +4101,9 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
      * 修法：放到 viewDidLoad 最末尾，所有视图都加完之后再添加。
      */
     MFAddBackButton(self);
+
+    /* 11142669：启动原生进度轮询（1 秒，JS 不推时的兜底） */
+    [self startProgressPoll];
 
     /*
      * 11142655：监听 JS 回传的播放状态。
@@ -4164,6 +4241,78 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     /* 4. 歌词高亮联动 */
     self.currentProgress = cur;
     [self refreshLyricHighlight];
+
+    /*
+     * ============ 11142669：切歌后刷新播放页 ============
+     *
+     * 用户反馈「切歌以后封面/歌词/名称不会跟着变」。
+     *
+     * 原问题：JS 推的状态里带 title，但这里只更新了进度和图标，
+     * 没有更新标题/封面。现在检测 title 变化，变了就整页刷新。
+     */
+    NSString *newTitle = [state[@"title"] isKindOfClass:[NSString class]]
+        ? state[@"title"] : nil;
+    if (newTitle.length > 0 &&
+        ![newTitle isEqualToString:self.lastRenderedTitle ?: @""]) {
+        [self refreshNowPlayingContent:state];
+    }
+}
+
+/*
+ * 11142669：曲目变化时刷新标题/歌手/封面。
+ */
+- (void)refreshNowPlayingContent:(NSDictionary *)state {
+    NSString *title = state[@"title"] ?: @"";
+    NSString *artist = state[@"artist"] ?: @"";
+    NSString *album = state[@"album"] ?: @"";
+    NSString *artwork = state[@"artwork"] ?: @"";
+
+    self.lastRenderedTitle = title;
+
+    self.titleLabel.text = title;
+
+    NSString *sub = nil;
+    if (artist.length > 0 && album.length > 0) {
+        sub = [NSString stringWithFormat:@"%@ / %@", artist, album];
+    } else {
+        sub = artist.length > 0 ? artist : album;
+    }
+    self.artistLabel.text = sub ?: @"";
+
+    /* 封面换了就重新下载 */
+    if (artwork.length > 0) {
+        NSURL *url = [NSURL URLWithString:artwork];
+        if (url) {
+            __weak __typeof(self) weakSelf = self;
+            NSString *token = [artwork copy];
+            dispatch_async(dispatch_get_global_queue(0, 0), ^{
+                @autoreleasepool {
+                    NSData *d = [NSData dataWithContentsOfURL:url];
+                    UIImage *img = d ? [UIImage imageWithData:d] : nil;
+                    if (!img) {
+                        return;
+                    }
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        @try {
+                            __strong __typeof(weakSelf) s = weakSelf;
+                            if (!s || !s.view.window) {
+                                return;
+                            }
+                            s.coverView.image = img;
+                            s.backgroundImageView.image = img;
+                            MFCarPlayLogBoth(@"NOWPLAYING content refresh: %@ (cover %lu)",
+                                  token.length > 0 ? @"with" : @"no",
+                                  (unsigned long)d.length);
+                        } @catch (NSException *e) {
+                            MFCarPlayLogBoth(@"NOWPLAYING refresh threw: %@", e.reason);
+                        }
+                    });
+                }
+            });
+        }
+    }
+
+    MFCarPlayLogBoth(@"NOWPLAYING content updated: %@ - %@", title, sub ?: @"");
 }
 
 - (UIButton *)makeControlButton:(NSString *)text action:(SEL)action {
@@ -4250,6 +4399,64 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
  *
  * 两者共用同一个封面位置的矩形区域，只是显隐切换。
  */
+/* 11142669：启动进度轮询 */
+- (void)startProgressPoll {
+    if (self.progressPollTimer) {
+        return;
+    }
+    __weak __typeof(self) weakSelf = self;
+    self.progressPollTimer = [NSTimer scheduledTimerWithTimeInterval:1.0
+                                                              repeats:YES
+                                                                block:^(NSTimer *timer) {
+        __strong __typeof(weakSelf) s = weakSelf;
+        if (!s || !s.view.window) {
+            [timer invalidate];
+            s.progressPollTimer = nil;
+            return;
+        }
+        [s pollProgressOnce];
+    }];
+    MFCarPlayLogBoth(@"NOWPLAYING progress poll started");
+}
+
+/* 11142669：轮询一次（读 MMKV 的 progress） */
+- (void)pollProgressOnce {
+    @try {
+        NSDictionary *np = MFCarPlayNativeNowPlaying();
+        if (![np isKindOfClass:[NSDictionary class]]) {
+            return;
+        }
+        NSNumber *prog = [np[@"progress"] isKindOfClass:[NSNumber class]] ? np[@"progress"] : nil;
+        NSNumber *dur = [np[@"duration"] isKindOfClass:[NSNumber class]] ? np[@"duration"] : nil;
+        if (!prog) {
+            return;
+        }
+        double cur = prog.doubleValue;
+        double total = dur ? dur.doubleValue : 0;
+
+        /* 进度没变就不刷，省性能 */
+        if (fabs(cur - self.currentProgress) < 0.5) {
+            return;
+        }
+        self.currentProgress = cur;
+
+        if (self.progressView && total > 0) {
+            double ratio = cur / total;
+            if (ratio < 0) ratio = 0;
+            if (ratio > 1) ratio = 1;
+            [self.progressView setProgress:ratio animated:YES];
+        }
+        if (self.timeLabel && total > 0) {
+            self.timeLabel.text = [NSString stringWithFormat:@"%@   /   %@",
+                                   [self formatTime:cur],
+                                   [self formatTime:total]];
+        }
+        [self refreshLyricHighlight];
+    } @catch (NSException *e) {
+        MFCarPlayLogBoth(@"pollProgress threw: %@", e.reason);
+    }
+}
+
 - (void)onCoverTap {
     self.showingLyric = !self.showingLyric;
     MFCarPlayLogBoth(@"NOWPLAYING toggle lyric mode -> %d", (int)self.showingLyric);
@@ -4319,8 +4526,20 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
                                       reuseIdentifier:cid];
         cell.backgroundColor = [UIColor clearColor];
         cell.selectionStyle = 0;
+        /*
+         * 11142670：歌词居中对齐。
+         *
+         * 用户要求「切换成歌词显示以后歌词居中」。
+         *
+         * 光设 textAlignment 不够 —— UILabel 在 cell 里的实际宽度
+         * 是内容宽度，靠左排，中心点偏左。
+         * 必须同时把 label 的 frame 撑满 cell 宽度，居中对齐才生效。
+         */
         cell.textLabel.textAlignment = NSTextAlignmentCenter;
         cell.detailTextLabel.textAlignment = NSTextAlignmentCenter;
+        /* 让 label 宽度撑满，居中对齐才真正居中 */
+        cell.textLabel.numberOfLines = 0;
+        cell.detailTextLabel.numberOfLines = 0;
     }
     if (indexPath.row < (NSInteger)self.lyricLines.count) {
         NSDictionary *line = self.lyricLines[(NSUInteger)indexPath.row];
@@ -4350,6 +4569,31 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
  *
  * 由 handleNowPlayingState: 调用（JS 每秒推一次 progress）。
  */
+/*
+ * 11142670：歌词真正居中。
+ *
+ * UILabel 的 textAlignment=Center 只在 label 宽度 = cell 宽度时
+ * 才视觉居中。系统 cell 的 textLabel 宽度由内容决定，
+ * 所以要在 willDisplay 里把 frame 撑满。
+ */
+- (void)tableView:(UITableView *)tableView
+      willDisplayCell:(UITableViewCell *)cell
+   forRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (tableView != self.lyricTable) {
+        return;
+    }
+    CGFloat w = tableView.bounds.size.width;
+    CGFloat h = cell.contentView.bounds.size.height;
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+    /* 左右各留 16，居中 */
+    cell.textLabel.frame = CGRectMake(16, 0, w - 32, h * 0.65);
+    cell.detailTextLabel.frame = CGRectMake(16, h * 0.6, w - 32, h * 0.4);
+    cell.textLabel.textAlignment = NSTextAlignmentCenter;
+    cell.detailTextLabel.textAlignment = NSTextAlignmentCenter;
+}
+
 - (void)refreshLyricHighlight {
     /*
      * ============ 11142664：闪退修复 ============
@@ -4455,6 +4699,11 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
 /* 11142668：移除观察者 + 取消待执行的定时器，防止野指针闪退 */
 - (void)dealloc {
+    /* 11142669：停止轮询 */
+    if (self.progressPollTimer) {
+        [self.progressPollTimer invalidate];
+        self.progressPollTimer = nil;
+    }
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     MFCarPlayLogBoth(@"NOWPLAYING dealloc");
 }

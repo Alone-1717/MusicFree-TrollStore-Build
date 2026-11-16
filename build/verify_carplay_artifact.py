@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142668"
+EXPECTED_VERSION = "11142670"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -137,13 +137,16 @@ BINARY_MARKERS = [
     b"BRIDGE got %lu top lists",
     b"ROOT layout: screen=%.0fx%.0f scale=%.2f",
     b"CELL cover set threw: %@",
-    b"MFLoadCoverIntoCell threw: %@",
     b"NOWPLAYING cover set threw: %@",
     b"ROOT dealloc",
     b"TOPLIST dealloc",
     b"NOWPLAYING dealloc",
     b"SCENE DELEGATE dealloc",
     b"ROOT tab IGNORED: bad tag=%ld",
+    b"ROOT bg tap -> hide keyboard",
+    b"NOWPLAYING progress poll started",
+    b"NOWPLAYING content updated: %@ - %@",
+    b"BRIDGE state: %@ - %@ playing=%@ pos=%@/%@",
 ]
 
 # 旧版已证伪/致命的标记，产物里绝不能再出现

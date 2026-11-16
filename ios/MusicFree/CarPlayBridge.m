@@ -294,11 +294,15 @@ RCT_EXPORT_METHOD(setNowPlayingState:(NSDictionary *)state)
                            state[@"progress"] ?: @""];
     if (![signature isEqualToString:sLastSignature ?: @""]) {
         sLastSignature = [signature copy];
-        NSLog(@"[MusicFree][CarPlay] BRIDGE nowPlayingState: %@ - %@ playing=%@ progress=%@",
+        MFCarPlayLogBoth(@"BRIDGE state: %@ - %@ playing=%@ pos=%@/%@ fav=%@ rep=%@ q=%@",
               state[@"title"] ?: @"?",
               state[@"artist"] ?: @"?",
               state[@"isPlaying"] ?: @"?",
-              state[@"progress"] ?: @"?");
+              state[@"progress"] ?: @"?",
+              state[@"duration"] ?: @"?",
+              state[@"isFavorite"] ?: @"?",
+              state[@"repeatMode"] ?: @"?",
+              state[@"quality"] ?: @"?");
     }
 
     [[NSNotificationCenter defaultCenter] postNotificationName:kMFCarPlayNowPlayingState

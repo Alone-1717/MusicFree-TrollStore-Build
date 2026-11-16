@@ -573,6 +573,7 @@ async function pushNowPlayingState() {
             /* 忽略 */
         }
 
+        trace("[CarPlay] calling setNowPlayingState...");
         NativeBridge.setNowPlayingState({
             title: music?.title ?? "",
             artist: music?.artist ?? "",
@@ -698,8 +699,25 @@ export function setupCarPlay() {
      *
      * 去重：状态没变就不推（避免无意义过桥）。
      */
+    /*
+     * 11142670：加启动日志，确认 ticker 真的跑起来了。
+     *
+     * 日志里 BRIDGE state: 零次出现，需要区分两种情况：
+     *   A. setInterval 没启动（setupCarPlay 没跑到 / started 拦截）
+     *   B. setInterval 启动了但 NativeBridge.setNowPlayingState 调用失败
+     *
+     * 现在用 trace 标记启动，用计数确认运行。
+     */
     let lastStateSig = "";
+    let tickCount = 0;
+    trace("[CarPlay] STATE TICKER starting...");
+
     setInterval(async () => {
+        tickCount += 1;
+        /* 前 3 次和每 30 次（约15秒）打一次，避免日志爆炸 */
+        if (tickCount <= 3 || tickCount % 30 === 0) {
+            trace(`[CarPlay] state tick #${tickCount}`);
+        }
         try {
             const music = TrackPlayer.currentMusic;
             const key = music?.id ?? "";
