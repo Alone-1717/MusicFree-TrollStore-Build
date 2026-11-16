@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142683"
+EXPECTED_VERSION = "11142684"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -157,9 +157,7 @@ BINARY_MARKERS = [
     b"[KEYBOARD] hidden by bg tap",
     b"[SEEK] tap at %.2f",
     b"lyric table built: %lu lines",
-    b"AVAudioSession(windows): catOK=%d",
     b"favorite tapped (btn=%@)",
-    b"[POLL] stopped: not in hierarchy",
     b"[POLL] state step EXCEPTION: %@",
     b"NOWPLAYING progress poll started (GCD timer)",
     b"[POLL] dispatch_source_create FAILED",
@@ -171,6 +169,8 @@ BINARY_MARKERS = [
     b"NOWPLAYING state userInfo not dict",
     b"BRIDGE block EXCEPTION: %@ -- %@",
     b"AVAudioSession FINAL: catOK=%d",
+    b"no nav and no presenter",
+    b"shouldReceiveTouch",
 ]
 
 # 旧版已证伪/致命的标记，产物里绝不能再出现

@@ -4042,6 +4042,12 @@ static void MFInstallCrashHandler(void) {
 /* 11142681：GCD 轮询定时器（全局，避免 ObjC 属性类型问题） */
 static dispatch_source_t sGCDPollTimer = NULL;
 
+/*
+ * 11142684：手势代理，避免点按钮时误触发切歌词
+ */
+@interface MFCarPlayWindowNowPlayingVC () <UIGestureRecognizerDelegate>
+@end
+
 @implementation MFCarPlayWindowNowPlayingVC
 
 - (void)viewDidLoad {
@@ -4133,10 +4139,32 @@ static dispatch_source_t sGCDPollTimer = NULL;
      * 必须开 userInteractionEnabled，UIImageView 默认是关的。
      */
     self.coverView.userInteractionEnabled = YES;
+
+    /*
+     * ================================================================
+     * 11142684：修复「歌词切不回封面」
+     * ================================================================
+     *
+     * 原问题：手势只绑在 coverView 上。
+     * 切到歌词时 coverView.hidden = YES -> 手势跟着失效，
+     * 点哪里都没反应，只能杀 App。
+     *
+     * 修法：手势绑到 self.view（整个播放页）。
+     * cancelsTouchesInView = NO 保证不拦截按钮点击。
+     */
     UITapGestureRecognizer *tap =
         [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(onCoverTap)];
     tap.numberOfTapsRequired = 1;
-    [self.coverView addGestureRecognizer:tap];
+    tap.cancelsTouchesInView = NO;
+    tap.delegate = self;      /* 11142684：让按钮优先响应 */
+    [self.view addGestureRecognizer:tap];
+
+    /* 封面单独也加一份（保证直接点封面有效） */
+    UITapGestureRecognizer *coverTap =
+        [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(onCoverTap)];
+    coverTap.numberOfTapsRequired = 1;
+    coverTap.cancelsTouchesInView = NO;
+    [self.coverView addGestureRecognizer:coverTap];
     [self.view addSubview:self.coverView];
 
     /* 异步下载封面（失败就不显示，不影响其他控件） */
@@ -4614,7 +4642,18 @@ static dispatch_source_t sGCDPollTimer = NULL;
 
 - (void)onBack {
     MFCarPlayLogBoth(@"%@ tap BACK", @"MFCarPlayWindowNowPlayingVC");
-    [self.navigationController popViewControllerAnimated:YES];
+    /*
+     * 11142684：加 fallback。
+     * 如果 navigationController 为 nil（异常情况），
+     * 用 dismiss 兜底，保证一定能退出。
+     */
+    if (self.navigationController) {
+        [self.navigationController popViewControllerAnimated:YES];
+    } else if (self.presentingViewController) {
+        [self dismissViewControllerAnimated:YES completion:nil];
+    } else {
+        MFCarPlayLogBoth(@"NOWPLAYING onBack: no nav and no presenter");
+    }
 }
 
 
@@ -4671,11 +4710,22 @@ static dispatch_source_t sGCDPollTimer = NULL;
         return;
     }
 
-    /* 1 秒间隔，允许 0.1 秒误差（省电） */
+    /*
+     * ================================================================
+     * 11142684：轮询 1.0s -> 0.3s（修复歌词慢）
+     * ================================================================
+     *
+     * 原问题：歌词比声音慢 1-2 秒
+     * 原因：JS 歌词 800ms + 原生进度 1000ms，最坏叠加 1.8s
+     * 修法：原生轮询 300ms，歌词高亮用最新进度计算
+     *
+     * 权衡：300ms 比 1s 多消耗一点 CPU，
+     * 但这是播放页专用定时器，页面退出就停，可接受。
+     */
     dispatch_source_set_timer(timer,
-                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-                              (uint64_t)(1.0 * NSEC_PER_SEC),
-                              (uint64_t)(0.1 * NSEC_PER_SEC));
+                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
+                              (uint64_t)(0.3 * NSEC_PER_SEC),
+                              (uint64_t)(0.05 * NSEC_PER_SEC));
 
     dispatch_source_set_event_handler(timer, ^{
         @try {
@@ -4981,6 +5031,29 @@ static dispatch_source_t sGCDPollTimer = NULL;
     }
 }
 
+/*
+ * 11142684：手势代理
+ *
+ * 点按钮/表格时不触发切歌词，
+ * 只有点空白区域才切换。
+ */
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g
+       shouldReceiveTouch:(UITouch *)touch {
+    UIView *v = touch.view;
+    /* 按钮、表格、进度条上不响应 */
+    while (v && v != self.view) {
+        if ([v isKindOfClass:[UIButton class]] ||
+            [v isKindOfClass:[UITableView class]] ||
+            [v isKindOfClass:[UITextField class]] ||
+            [v isKindOfClass:[UIProgressView class]] ||
+            [v isKindOfClass:[UISlider class]]) {
+            return NO;
+        }
+        v = v.superview;
+    }
+    return YES;
+}
+
 - (void)onCoverTap {
     MFCarPlayLogBoth(@"NOWPLAYING onCoverTap");
     /*
@@ -5017,6 +5090,13 @@ static dispatch_source_t sGCDPollTimer = NULL;
                 self.titleLabel.hidden = YES;
                 self.artistLabel.hidden = YES;
                 self.lyricTable.hidden = NO;
+
+                /* 11142684：歌词表会盖住返回按钮，重新提升按钮层级 */
+                for (UIView *sv in self.view.subviews) {
+                    if ([sv isKindOfClass:[UIButton class]]) {
+                        [self.view bringSubviewToFront:sv];
+                    }
+                }
                 [self.lyricTable reloadData];      /* 先确保行数同步 */
                 [self refreshLyricHighlight];
             } else {
@@ -5091,7 +5171,12 @@ static dispatch_source_t sGCDPollTimer = NULL;
          * 之前约束到 coverView.top，实测只有 174px（3.3 行）。
          * 改为从歌名上方到进度条上方，高度约 236px（5 行）。
          */
-        [tb.topAnchor constraintEqualToAnchor:self.titleLabel.topAnchor constant:-MFS(6)],
+        /*
+         * 11142684：歌词表顶部下移，避开返回按钮
+         * 返回按钮在 top=14、高 44，即占到 y=58
+         * 歌词表从 y=64 开始才不会挡住它
+         */
+        [tb.topAnchor constraintEqualToAnchor:self.view.topAnchor constant:MFS(64)],
         [tb.bottomAnchor constraintEqualToAnchor:self.progressView.topAnchor constant:-MFS(6)],
         [tb.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:MFS(40)],
         [tb.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-MFS(40)],

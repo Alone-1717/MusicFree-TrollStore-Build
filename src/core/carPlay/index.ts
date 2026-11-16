@@ -836,7 +836,7 @@ export function setupCarPlay() {
         } catch (e) {
             /* 静默 */
         }
-    }, 800);
+    }, 300);
 
     /*
      * ============ 11142661：播放状态实时推送 ============
@@ -908,7 +908,7 @@ export function setupCarPlay() {
         } catch (e) {
             /* 静默，不打扰 */
         }
-    }, 500);
+    }, 300);
 
     /* 11142662：启动时拉一次榜单（异步，不阻塞） */
     pushTopLists();
