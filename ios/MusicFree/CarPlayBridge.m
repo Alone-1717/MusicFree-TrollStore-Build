@@ -425,6 +425,23 @@ RCT_EXPORT_METHOD(setTopListTracks:(NSArray *)tracks listId:(NSString *)listId)
     });
 }
 
+/*
+ * ============ 11142671：JS 日志转发 ============
+ *
+ * JS 侧的 trace() 只写 RN 控制台，carplay.log 看不到。
+ * 这个桥方法让 JS 能把关键信息写进原生日志文件。
+ *
+ * 用法：
+ *   NativeBridge.setJsLog("playTrack OK: 天后 queue=267")
+ */
+RCT_EXPORT_METHOD(setJsLog:(NSString *)msg)
+{
+    if (![msg isKindOfClass:[NSString class]]) {
+        return;
+    }
+    MFCarPlayLogBoth(@"JS | %@", msg);
+}
+
 /* 查询接口 */
 - (NSArray *)topLists {
     return self.topListsData ?: @[];

@@ -607,7 +607,21 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     if (![newText isKindOfClass:[NSString class]]) {
         return;
     }
+    /*
+     * 11142671：输入后键盘不能消失。
+     *
+     * 用户反馈「输入一个字母键盘就消失了」。
+     * 根因：doSearch 里 reloadData 触发了布局重排，
+     * 把键盘挤掉 / 或者键盘被误隐藏。
+     *
+     * 修法：commit 后显式把键盘重新提到最前并保持显示。
+     */
     self.targetField.text = newText;
+
+    /* 保证键盘仍然可见 */
+    self.hidden = NO;
+    [self.superview bringSubviewToFront:self];
+
     if (self.onChange) {
         self.onChange(newText);
     }
@@ -884,7 +898,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 /* ============ 11142657：歌词 ============ */
 @property (nonatomic, strong) UITableView *lyricTable;      /* 歌词列表 */
 @property (nonatomic, strong) NSArray *lyricLines;          /* @[{time, lrc, translation}] */
-@property (nonatomic, assign) NSInteger currentLyricIndex;  /* 当前高亮行 */
+@property (nonatomic, assign) NSInteger currentLyricIndex;  /* 当前高亮行，-1 表示未初始化 */
 @property (nonatomic, assign) BOOL showingLyric;            /* 是否在歌词模式 */
 @property (nonatomic, assign) double currentProgress;       /* 当前播放秒数（JS 推送） */
 /* 11142669：已渲染的曲名，用于检测切歌 */
@@ -901,6 +915,8 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
  * 但能保证进度条和时间文字是活的。
  */
 @property (nonatomic, strong) NSTimer *progressPollTimer;
+/* 11142671：最后一次 JS 推送状态的时间，用于让轮询避让 */
+@property (nonatomic, assign) NSTimeInterval lastJSStateTime;
 
 /* ============ 11142661：爱心 / 循环 / 音质 ============ */
 @property (nonatomic, strong) UIButton *favoriteButton;
@@ -982,6 +998,9 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
      * 车机上滚动条没用，反而碍眼。
      */
     self.table.showsVerticalScrollIndicator = NO;
+    self.table.showsHorizontalScrollIndicator = NO;
+    /* 11142671：indicatorStyle 也设 None，彻底去掉右侧箭头 */
+    self.table.indicatorStyle = 0;
     self.table.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.table];
 
@@ -1688,6 +1707,9 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
      * 车机上滚动条没用，反而碍眼。
      */
     self.table.showsVerticalScrollIndicator = NO;
+    self.table.showsHorizontalScrollIndicator = NO;
+    /* 11142671：indicatorStyle 也设 None，彻底去掉右侧箭头 */
+    self.table.indicatorStyle = 0;
     self.table.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.table];
 
@@ -3714,6 +3736,9 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
      * 车机上滚动条没用，反而碍眼。
      */
     self.table.showsVerticalScrollIndicator = NO;
+    self.table.showsHorizontalScrollIndicator = NO;
+    /* 11142671：indicatorStyle 也设 None，彻底去掉右侧箭头 */
+    self.table.indicatorStyle = 0;
     self.table.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.table];
 
@@ -4066,19 +4091,20 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         [next.widthAnchor constraintEqualToConstant:MFS(110)],
         [next.heightAnchor constraintEqualToConstant:MFS(56)],
 
-        /* 进度条：按钮下方，左右留边 */
-        [self.progressView.topAnchor constraintEqualToAnchor:play.bottomAnchor constant:10],
+        /* 11142671：进度条再往下一点 */
+        [self.progressView.topAnchor constraintEqualToAnchor:play.bottomAnchor constant:6],
         [self.progressView.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:40],
         [self.progressView.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-40],
         [self.progressView.heightAnchor constraintEqualToConstant:MFS(4)],
 
         /* 时间：进度条下方 */
-        [self.timeLabel.topAnchor constraintEqualToAnchor:self.progressView.bottomAnchor constant:8],
+        [self.timeLabel.topAnchor constraintEqualToAnchor:self.progressView.bottomAnchor constant:4],
         [self.timeLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:24],
         [self.timeLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-24],
     ]];
 
     self.lastRenderedTitle = title;
+    self.currentLyricIndex = -1;   /* 11142671：-1 表示还没高亮过 */
     MFCarPlayLogBoth(@"NOWPLAYING VC: title=%@ artist=%@ album=%@ duration=%.0f "
                      @"progress=%.0f queue=%@ artwork=%@",
           title, artist, album, duration, progress,
@@ -4126,6 +4152,9 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     if (![state isKindOfClass:[NSDictionary class]]) {
         return;
     }
+
+    /* 11142671：记录 JS 推送时间，让原生轮询避让 */
+    self.lastJSStateTime = [NSDate timeIntervalSinceReferenceDate];
 
     NSNumber *isPlaying = [state[@"isPlaying"] isKindOfClass:[NSNumber class]]
         ? state[@"isPlaying"] : nil;
@@ -4421,6 +4450,23 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
 /* 11142669：轮询一次（读 MMKV 的 progress） */
 - (void)pollProgressOnce {
+    /*
+     * ============ 11142671：轮询只在 JS 不推时启用 ============
+     *
+     * 日志发现严重问题：
+     *   BRIDGE state: ... pos=35.215479046/285.628...   <- JS 值正确
+     *   nowPlaying: ... progress=1.690546428662761e-52  <- MMKV 值乱码
+     *
+     * 我的轮询每秒读 MMKV（乱码值）并覆盖 JS 的正确进度，
+     * 导致进度条永远不动。
+     *
+     * 修法：记录最后一次 JS 推送时间，2 秒内收到过就不轮询。
+     */
+    if (self.lastJSStateTime > 0 &&
+        [NSDate timeIntervalSinceReferenceDate] - self.lastJSStateTime < 2.0) {
+        return;   /* JS 在正常工作，不要覆盖 */
+    }
+
     @try {
         NSDictionary *np = MFCarPlayNativeNowPlaying();
         if (![np isKindOfClass:[NSDictionary class]]) {
@@ -4434,7 +4480,16 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         double cur = prog.doubleValue;
         double total = dur ? dur.doubleValue : 0;
 
-        /* 进度没变就不刷，省性能 */
+        /*
+         * 11142671：过滤垃圾值。
+         * 日志里出现过 progress=1.69e-52 这种，
+         * 明显是内存未初始化的数据，必须排除。
+         */
+        if (cur < 0 || cur > total + 1 || total <= 0) {
+            return;
+        }
+
+        /* 进度没变就不刷 */
         if (fabs(cur - self.currentProgress) < 0.5) {
             return;
         }
@@ -4495,8 +4550,9 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     [NSLayoutConstraint activateConstraints:@[
         [tb.topAnchor constraintEqualToAnchor:self.coverView.topAnchor],
         [tb.bottomAnchor constraintEqualToAnchor:self.coverView.bottomAnchor],
-        [tb.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:60],
-        [tb.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-60],
+        /* 11142671：歌词区左右对称，保证居中 */
+        [tb.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:40],
+        [tb.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-40],
     ]];
 
     /* 加载当前歌词 */
@@ -4607,12 +4663,31 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
      *
      * 修法：每个索引操作前都校验范围，任何异常状态直接返回。
      */
-    if (!self.showingLyric || !self.lyricTable) {
+    /*
+     * 11142671：加诊断日志。
+     * 用户反馈「歌词不动，一直卡在开头」，需要确认卡在哪一步。
+     */
+    static int sLyricDbg = 0;
+    BOOL shouldLog = (sLyricDbg++ % 10 == 0);   /* 每 10 次打一次 */
+
+    if (!self.showingLyric) {
+        if (shouldLog) {
+            MFCarPlayLogBoth(@"LYRIC skip: not showing");
+        }
+        return;
+    }
+    if (!self.lyricTable) {
+        if (shouldLog) {
+            MFCarPlayLogBoth(@"LYRIC skip: no table");
+        }
         return;
     }
 
     NSInteger count = (NSInteger)self.lyricLines.count;
     if (count <= 0) {
+        if (shouldLog) {
+            MFCarPlayLogBoth(@"LYRIC skip: 0 lines");
+        }
         return;                    /* 没有歌词，什么都不做 */
     }
 
@@ -4635,7 +4710,14 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     if (target < 0 || target >= count) {
         return;
     }
-    if (target == self.currentLyricIndex) {
+    /*
+     * 11142671：首次必须滚动。
+     *
+     * 原逻辑 target == currentLyricIndex 就 return，
+     * 但初值是 0，第 0 行时永远不滚 -> 一直卡在开头。
+     * 改成：只有「不是首次」且「行没变」才跳过。
+     */
+    if (target == self.currentLyricIndex && self.currentLyricIndex >= 0) {
         return;
     }
 
@@ -4675,6 +4757,8 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
             [self.lyricTable scrollToRowAtIndexPath:[NSIndexPath indexPathForRow:target inSection:0]
                                    atScrollPosition:UITableViewScrollPositionMiddle
                                            animated:YES];
+            MFCarPlayLogBoth(@"LYRIC scroll to row %ld (prog=%.1f, total=%ld)",
+                  (long)target, prog, (long)count);
         } @catch (NSException *e) {
             MFCarPlayLogBoth(@"LYRIC scrollTo threw: %@", e.reason);
         }

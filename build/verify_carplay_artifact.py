@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142670"
+EXPECTED_VERSION = "11142671"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -147,6 +147,10 @@ BINARY_MARKERS = [
     b"NOWPLAYING progress poll started",
     b"NOWPLAYING content updated: %@ - %@",
     b"BRIDGE state: %@ - %@ playing=%@ pos=%@/%@",
+    b"JS | %@",
+    b"LYRIC scroll to row %ld",
+    b"LYRIC skip: not showing",
+    b"LYRIC skip: 0 lines",
 ]
 
 # 旧版已证伪/致命的标记，产物里绝不能再出现

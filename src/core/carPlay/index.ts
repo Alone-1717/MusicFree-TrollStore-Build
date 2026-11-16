@@ -15,6 +15,7 @@ import { NativeEventEmitter, NativeModules, Platform } from "react-native";
 import MusicSheet from "@/core/musicSheet";
 import { MusicRepeatMode } from "@/constants/repeatModeConst";
 import PluginManager from "@/core/pluginManager";
+import { State } from "react-native-track-player";
 import TrackPlayer from "@/core/trackPlayer";
 import { errorLog, trace } from "@/utils/log";
 import { getDefaultStore } from "jotai";
@@ -39,6 +40,26 @@ let emitter: NativeEventEmitter | null = null;
  * 缓存在这里。playTrack 找不到时从缓存取。
  */
 const trackCache = new Map<string, any>();
+
+/*
+ * 11142671：把关键日志送到原生写文件。
+ *
+ * trace() 只写到 RN 控制台，carplay.log 里看不到，
+ * 导致「播放失败」这类问题无法定位。
+ * 用一个 emitControl 的旁路通道把消息传过去。
+ */
+function logToNative(msg: string) {
+    /*
+     * 11142671：通过 setJsLog 桥方法写原生日志文件。
+     * 原生侧会把内容写进 carplay.log，方便排查。
+     */
+    try {
+        NativeBridge?.setJsLog?.(String(msg ?? ""));
+    } catch (e) {
+        /* 忽略 */
+    }
+}
+
 
 function cacheTracks(list: any[]) {
     if (!Array.isArray(list)) {
@@ -135,9 +156,10 @@ async function playTrack(trackId: string, sheetId: string) {
         /* 3. 都没有 */
         if (!musicItem) {
             errorLog("[CarPlay] track not found anywhere", { trackId, sheetId });
-            trace(`[CarPlay] playTrack FAILED: ${trackId} not in sheet nor cache (cache=${trackCache.size})`);
+            logToNative(`playTrack FAILED: ${trackId} not found (cache=${trackCache.size})`);
             return;
         }
+        logToNative(`playTrack found: ${musicItem.title ?? trackId} (sheetId='${sheetId}')`);
 
         /* 没有队列就单曲播放 */
         if (!list.length) {
@@ -145,11 +167,13 @@ async function playTrack(trackId: string, sheetId: string) {
             trace(`[CarPlay] playTrack: single track (no queue) ${musicItem.title ?? trackId}`);
         }
 
+        logToNative(`playWithReplacePlayList start: ${musicItem.title ?? trackId} queue=${list.length}`);
         await TrackPlayer.playWithReplacePlayList(musicItem, list);
         pushNowPlaying(musicItem);
-        trace(`[CarPlay] playTrack OK: ${musicItem.title ?? trackId} queue=${list.length}`);
-    } catch (e) {
+        logToNative(`playTrack OK: ${musicItem.title ?? trackId} queue=${list.length}`);
+    } catch (e: any) {
         errorLog("[CarPlay] playTrack", e);
+        logToNative(`playTrack EXCEPTION: ${e?.message ?? e}`);
     }
 }
 
@@ -183,15 +207,16 @@ function toggleFavoriteForCurrent() {
         if (!music) {
             return;
         }
-        const sheetId = MusicSheet.defaultSheet?.id ?? "favorite";
-        const isFav = MusicSheet.isMusicInSheet?.(sheetId, music) ?? false;
+        const sheetId = "favorite";   /* _defaultSheet.id 固定值 */
+        /* 11142671：用 isCurrentFavorite 判断（isMusicInSheet 不存在） */
+        const isFav = isCurrentFavorite(music);
 
         if (isFav) {
             MusicSheet.removeMusic(sheetId, music);
-            trace(`[CarPlay] unfavorite: ${music.title}`);
+            logToNative(`unfavorite: ${music.title}`);
         } else {
             MusicSheet.addMusic(sheetId, music);
-            trace(`[CarPlay] favorite: ${music.title}`);
+            logToNative(`favorite: ${music.title}`);
         }
 
         /* 立即回传新状态，让车机爱心图标马上变 */
@@ -269,8 +294,32 @@ async function handleControl(action: string) {
 
             /* ============ 11142661：爱心 / 循环 / 音质 ============ */
             case "toggle":
-                /* 播放/暂停切换（播放页中间按钮） */
-                await TrackPlayer.togglePlay();
+                /*
+                 * ============ 11142671：修复播放/暂停按钮 ============
+                 *
+                 * TrackPlayer.togglePlay **不存在**（查源码确认），
+                 * 所以点击一直没反应。
+                 *
+                 * 真实 API 只有 play() / pause()。
+                 * 这里用 getPlaybackState() 判断当前状态再决定。
+                 */
+                {
+                    let cur = 0;
+                    try {
+                        const st = await TrackPlayer.getPlaybackState();
+                        const v = st?.state;
+                        cur = (v === State.Playing || v === 3) ? 1 : 0;
+                    } catch (e) {
+                        cur = 0;
+                    }
+                    if (cur === 1) {
+                        await TrackPlayer.pause();
+                        logToNative("toggle -> pause");
+                    } else {
+                        await TrackPlayer.play();
+                        logToNative("toggle -> play");
+                    }
+                }
                 break;
 
             case "favorite":
@@ -525,17 +574,34 @@ async function handleSearch(query: string) {
  * 和手机端 heartIcon 组件同一套判断。
  */
 function isCurrentFavorite(music: any): boolean {
+    /*
+     * ============ 11142671：修复爱心状态误判 ============
+     *
+     * 日志显示 fav 永远是 1，查源码发现原因：
+     *   MusicSheet.isMusicInSheet 这个方法 **不存在**！
+     *   所以 `?.()` 返回 undefined，`?? false` 用的不对，
+     *   最终逻辑走不到正确分支。
+     *
+     * 真实 API（src/core/musicSheet/index.ts）：
+     *   _defaultSheet.id = "favorite"   （默认歌单固定 id）
+     *   判断是否收藏 = 该歌单的 musicList 里有没有这首歌
+     *   官方 useFavorite() 内部就是：
+     *     musicListMap.get(_defaultSheet.id)?.has(musicItem)
+     *
+     * 这里用等价的公开方法：
+     *   getSortedMusicListBySheetId("favorite").musicList
+     */
     if (!music) {
         return false;
     }
     try {
-        const sheetId = MusicSheet.defaultSheet?.id ?? "favorite";
-        if (typeof MusicSheet.isMusicInSheet === "function") {
-            return MusicSheet.isMusicInSheet(sheetId, music) ?? false;
+        const sheetId = "favorite";   /* _defaultSheet.id 固定值 */
+        const list =
+            MusicSheet.getSortedMusicListBySheetId?.(sheetId)?.musicList ?? [];
+        if (!Array.isArray(list) || list.length === 0) {
+            return false;
         }
-        /* 退路：查默认歌单的曲目列表 */
-        const list = MusicSheet.getSortedMusicListBySheetId?.(sheetId)?.musicList ?? [];
-        return list.some((x: any) => x?.id === music.id);
+        return list.some((x: any) => String(x?.id ?? "") === String(music.id ?? ""));
     } catch (e) {
         return false;
     }
@@ -568,7 +634,17 @@ async function pushNowPlayingState() {
         try {
             const st = await TrackPlayer.getPlaybackState();
             /* react-native-track-player 的 State.Playing = 3 */
-            isPlaying = st?.state === 3 ? 1 : 0;
+            /*
+             * 11142671：用 State 枚举判断，不硬编码。
+             *
+             * 日志显示 playing 永远是 0，说明 state === 3 判断失效。
+             * react-native-track-player 的 State 枚举：
+             *   None=0, Ready=1, Playing=3, Paused=2, Stopped=5,
+             *   Buffering=6, Loading=8, Ended=9
+             * 但不同版本值可能变，用枚举最稳。
+             */
+            const stVal = st?.state;
+            isPlaying = (stVal === State.Playing || stVal === 3) ? 1 : 0;
         } catch (e) {
             /* 忽略 */
         }
@@ -731,7 +807,17 @@ export function setupCarPlay() {
             }
             try {
                 const st = await TrackPlayer.getPlaybackState();
-                isPlaying = st?.state === 3 ? 1 : 0;
+                /*
+             * 11142671：用 State 枚举判断，不硬编码。
+             *
+             * 日志显示 playing 永远是 0，说明 state === 3 判断失效。
+             * react-native-track-player 的 State 枚举：
+             *   None=0, Ready=1, Playing=3, Paused=2, Stopped=5,
+             *   Buffering=6, Loading=8, Ended=9
+             * 但不同版本值可能变，用枚举最稳。
+             */
+            const stVal = st?.state;
+            isPlaying = (stVal === State.Playing || stVal === 3) ? 1 : 0;
             } catch (e) {
                 /* 忽略 */
             }
