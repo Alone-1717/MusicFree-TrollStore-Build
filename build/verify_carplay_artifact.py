@@ -16,7 +16,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_VERSION = "11142681"
+EXPECTED_VERSION = "11142683"
 EXPECTED_BUNDLE_ID = "app.musicfree.ios"
 
 BINARY_MARKERS = [
@@ -165,6 +165,12 @@ BINARY_MARKERS = [
     b"[POLL] dispatch_source_create FAILED",
     b"[POLL] GCD timer EXCEPTION: %@ -- %@",
     b"NOWPLAYING cancelled stale GCD timer",
+    b"CRASH HANDLER installed",
+    b"========== CRASH (ObjC Exception) ==========",
+    b"NOWPLAYING handleNowPlayingState",
+    b"NOWPLAYING state userInfo not dict",
+    b"BRIDGE block EXCEPTION: %@ -- %@",
+    b"AVAudioSession FINAL: catOK=%d",
 ]
 
 # 旧版已证伪/致命的标记，产物里绝不能再出现

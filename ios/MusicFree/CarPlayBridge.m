@@ -127,6 +127,7 @@ RCT_EXPORT_MODULE(CarPlayBridge);
     self.hasListeners = YES;
     __weak __typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
         __strong __typeof(weakSelf) self = weakSelf;
         if (!self) {
             return;
@@ -134,6 +135,9 @@ RCT_EXPORT_MODULE(CarPlayBridge);
         MFCarPlayLogBoth(@"BRIDGE startObserving, flush pending=%lu",
               (unsigned long)sPendingEvents.count);
         [self flushPendingEvents];
+            } @catch (NSException *e) {
+            MFCarPlayLogBoth(@"BRIDGE block EXCEPTION: %@ -- %@", e.name, e.reason);
+        }
     });
 }
 
@@ -145,6 +149,7 @@ RCT_EXPORT_MODULE(CarPlayBridge);
 RCT_EXPORT_METHOD(carPlayJSReady)
 {
     dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
         self.hasListeners = YES;
         sJSReady = YES;
         [self flushPendingEvents];
@@ -155,6 +160,9 @@ RCT_EXPORT_METHOD(carPlayJSReady)
                                                             object:nil
                                                           userInfo:nil];
         MFCarPlayLogBoth(@"BRIDGE JS READY (sJSReady=1) -- JS runtime is up");
+            } @catch (NSException *e) {
+            MFCarPlayLogBoth(@"BRIDGE block EXCEPTION: %@ -- %@", e.name, e.reason);
+        }
     });
 }
 
@@ -170,10 +178,14 @@ RCT_EXPORT_METHOD(setSheets:(NSArray *)sheets)
      * 从后台线程改 UI 必然闪退 —— 这是搜索/榜单闪退的根因。
      */
     dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
 
     self.sheetsData = [sheets isKindOfClass:[NSArray class]] ? sheets : @[];
     [self postDataUpdate:@{@"kind": @"sheets"}];
 
+            } @catch (NSException *e) {
+            MFCarPlayLogBoth(@"BRIDGE block EXCEPTION: %@ -- %@", e.name, e.reason);
+        }
     });
 }
 
@@ -187,6 +199,7 @@ RCT_EXPORT_METHOD(setTracks:(NSArray *)tracks forSheetId:(NSString *)sheetId)
      * 从后台线程改 UI 必然闪退 —— 这是搜索/榜单闪退的根因。
      */
     dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
 
     if (![sheetId isKindOfClass:[NSString class]]) {
         return;
@@ -194,6 +207,9 @@ RCT_EXPORT_METHOD(setTracks:(NSArray *)tracks forSheetId:(NSString *)sheetId)
     self.tracksData[sheetId] = [tracks isKindOfClass:[NSArray class]] ? tracks : @[];
     [self postDataUpdate:@{@"kind": @"tracks", @"sheetId": sheetId}];
 
+            } @catch (NSException *e) {
+            MFCarPlayLogBoth(@"BRIDGE block EXCEPTION: %@ -- %@", e.name, e.reason);
+        }
     });
 }
 
@@ -207,6 +223,7 @@ RCT_EXPORT_METHOD(setNowPlaying:(NSString *)title artist:(NSString *)artist)
      * 从后台线程改 UI 必然闪退 —— 这是搜索/榜单闪退的根因。
      */
     dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
 
     self.nowPlayingData = @{
         @"title": title ?: @"",
@@ -214,6 +231,9 @@ RCT_EXPORT_METHOD(setNowPlaying:(NSString *)title artist:(NSString *)artist)
     };
     [self postDataUpdate:@{@"kind": @"nowPlaying"}];
 
+            } @catch (NSException *e) {
+            MFCarPlayLogBoth(@"BRIDGE block EXCEPTION: %@ -- %@", e.name, e.reason);
+        }
     });
 }
 
@@ -242,6 +262,7 @@ RCT_EXPORT_METHOD(setSearchResults:(NSArray *)results query:(NSString *)query)
     NSArray *safeResults = [results isKindOfClass:[NSArray class]] ? results : @[];
 
     dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
         self.searchResultsData = safeResults;
         self.lastSearchQuery = safeQuery;
 
@@ -254,6 +275,9 @@ RCT_EXPORT_METHOD(setSearchResults:(NSArray *)results query:(NSString *)query)
             @"query": safeQuery,
             @"results": safeResults,
         }];
+            } @catch (NSException *e) {
+            MFCarPlayLogBoth(@"BRIDGE block EXCEPTION: %@ -- %@", e.name, e.reason);
+        }
     });
 }
 
@@ -280,6 +304,7 @@ RCT_EXPORT_METHOD(setNowPlayingState:(NSDictionary *)state)
      * 从后台线程改 UI 必然闪退 —— 这是搜索/榜单闪退的根因。
      */
     dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
 
     if (![state isKindOfClass:[NSDictionary class]]) {
         return;
@@ -309,6 +334,9 @@ RCT_EXPORT_METHOD(setNowPlayingState:(NSDictionary *)state)
                                                         object:nil
                                                       userInfo:state];
 
+            } @catch (NSException *e) {
+            MFCarPlayLogBoth(@"BRIDGE block EXCEPTION: %@ -- %@", e.name, e.reason);
+        }
     });
 }
 
@@ -333,6 +361,7 @@ RCT_EXPORT_METHOD(setLyric:(NSArray *)lines)
      * 从后台线程改 UI 必然闪退 —— 这是搜索/榜单闪退的根因。
      */
     dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
 
     NSArray *arr = [lines isKindOfClass:[NSArray class]] ? lines : @[];
 
@@ -356,6 +385,9 @@ RCT_EXPORT_METHOD(setLyric:(NSArray *)lines)
                                                         object:nil
                                                       userInfo:@{@"lines": sorted}];
 
+            } @catch (NSException *e) {
+            MFCarPlayLogBoth(@"BRIDGE block EXCEPTION: %@ -- %@", e.name, e.reason);
+        }
     });
 }
 
@@ -381,6 +413,7 @@ RCT_EXPORT_METHOD(setTopLists:(NSArray *)lists)
      * 从后台线程改 UI 必然闪退 —— 这是搜索/榜单闪退的根因。
      */
     dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
 
     self.topListsData = [lists isKindOfClass:[NSArray class]] ? lists : @[];
     MFCarPlayLogBoth(@"BRIDGE got %lu top lists",
@@ -390,6 +423,9 @@ RCT_EXPORT_METHOD(setTopLists:(NSArray *)lists)
                                                         object:nil
                                                       userInfo:@{@"lists": self.topListsData}];
 
+            } @catch (NSException *e) {
+            MFCarPlayLogBoth(@"BRIDGE block EXCEPTION: %@ -- %@", e.name, e.reason);
+        }
     });
 }
 
@@ -408,6 +444,7 @@ RCT_EXPORT_METHOD(setTopListTracks:(NSArray *)tracks listId:(NSString *)listId)
      * 从后台线程改 UI 必然闪退 —— 这是搜索/榜单闪退的根因。
      */
     dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
 
     self.topListTracksData = [tracks isKindOfClass:[NSArray class]] ? tracks : @[];
     self.topListTracksId = [listId isKindOfClass:[NSString class]] ? listId : @"";
@@ -422,6 +459,9 @@ RCT_EXPORT_METHOD(setTopListTracks:(NSArray *)tracks listId:(NSString *)listId)
         @"tracks": self.topListTracksData,
     }];
 
+            } @catch (NSException *e) {
+            MFCarPlayLogBoth(@"BRIDGE block EXCEPTION: %@ -- %@", e.name, e.reason);
+        }
     });
 }
 
@@ -502,9 +542,13 @@ RCT_EXPORT_METHOD(setJsLog:(NSString *)msg)
 
 - (void)postDataUpdate:(NSDictionary *)userInfo {
     dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
         [[NSNotificationCenter defaultCenter] postNotificationName:kMFCarPlayDataDidUpdate
                                                             object:nil
                                                           userInfo:userInfo];
+            } @catch (NSException *e) {
+            MFCarPlayLogBoth(@"BRIDGE block EXCEPTION: %@ -- %@", e.name, e.reason);
+        }
     });
 }
 
@@ -530,6 +574,7 @@ RCT_EXPORT_METHOD(setJsLog:(NSString *)msg)
     }
     NSDictionary *payload = @{@"name": name, @"body": body ?: @{}};
     dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
         MFCarPlayBridge *bridge = sharedInstance;
         if (bridge && bridge.hasListeners) {
             [bridge sendCarPlayEvent:name body:payload[@"body"]];
@@ -550,6 +595,9 @@ RCT_EXPORT_METHOD(setJsLog:(NSString *)msg)
         [sPendingEvents addObject:payload];
         RCTLogInfo(@"[MusicFree][CarPlay] event %@ queued (RN not ready), pending=%lu",
                    name, (unsigned long)sPendingEvents.count);
+            } @catch (NSException *e) {
+            MFCarPlayLogBoth(@"BRIDGE block EXCEPTION: %@ -- %@", e.name, e.reason);
+        }
     });
 }
 
@@ -562,8 +610,12 @@ RCT_EXPORT_METHOD(setJsLog:(NSString *)msg)
     } else {
         __weak __typeof(self) weakSelf = self;
         dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
             [weakSelf sendEventWithName:name body:body ?: @{}];
-        });
+                } @catch (NSException *e) {
+            MFCarPlayLogBoth(@"BRIDGE block EXCEPTION: %@ -- %@", e.name, e.reason);
+        }
+    });
     }
 }
 

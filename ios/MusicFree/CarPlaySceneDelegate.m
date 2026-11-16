@@ -460,6 +460,73 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 - (instancetype)initWithTargetField:(UITextField *)field;
 @end
 
+#pragma mark - 11142682 崩溃捕获
+
+/*
+ * ================================================================
+ * 崩溃捕获器
+ * ================================================================
+ *
+ * 之前一直在猜崩溃原因，因为拿不到堆栈。
+ * 现在把崩溃信息完整写入 carplay.log：
+ *   - ObjC 异常：异常名、原因、完整调用栈
+ *   - Signal：SIGSEGV/SIGABRT/SIGBUS 等，含回溯
+ *
+ * 这样下次闪退，日志里就有确切的崩溃函数和行号。
+ */
+
+static void MFUncaughtExceptionHandler(NSException *exception) {
+    NSMutableString *s = [NSMutableString string];
+    [s appendString:@"\n========== CRASH (ObjC Exception) ==========\n"];
+    [s appendFormat:@"Name   : %@\n", exception.name ?: @"?"];
+    [s appendFormat:@"Reason : %@\n", exception.reason ?: @"?"];
+    [s appendString:@"CallStackSymbols:\n"];
+    for (NSString *line in exception.callStackSymbols) {
+        [s appendFormat:@"  %@\n", line];
+    }
+    [s appendString:@"CallStackReturnAddresses:\n"];
+    for (NSNumber *addr in exception.callStackReturnAddresses) {
+        [s appendFormat:@"  0x%llx\n", addr.unsignedLongLongValue];
+    }
+    [s appendFormat:@"UserInfo: %@\n", exception.userInfo ?: @{}];
+    [s appendString:@"=============================================\n"];
+    MFCarPlayLogBoth(@"%@", s);
+}
+
+static void MFSignalHandler(int sig) {
+    const char *desc = "unknown";
+    if (sig == SIGSEGV) desc = "SIGSEGV bad memory access";
+    else if (sig == SIGABRT) desc = "SIGABRT abort";
+    else if (sig == SIGBUS) desc = "SIGBUS bus error";
+    else if (sig == SIGILL) desc = "SIGILL illegal instruction";
+    else if (sig == SIGFPE) desc = "SIGFPE arithmetic error";
+    else if (sig == SIGTRAP) desc = "SIGTRAP";
+
+    MFCarPlayLogBoth(@"\n========== CRASH (Signal %d: %s) ==========\n"
+                      "Signal %d received. Check last log lines above.\n"
+                      "============================================\n",
+                      sig, desc, sig);
+
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+static void MFInstallCrashHandler(void) {
+    static BOOL installed = NO;
+    if (installed) {
+        return;
+    }
+    installed = YES;
+    NSSetUncaughtExceptionHandler(&MFUncaughtExceptionHandler);
+    signal(SIGSEGV, MFSignalHandler);
+    signal(SIGABRT, MFSignalHandler);
+    signal(SIGBUS,  MFSignalHandler);
+    signal(SIGILL,  MFSignalHandler);
+    signal(SIGFPE,  MFSignalHandler);
+    signal(SIGTRAP, MFSignalHandler);
+    MFCarPlayLogBoth(@"CRASH HANDLER installed");
+}
+
 @implementation MFCarPlayKeyboardView
 
 - (instancetype)initWithTargetField:(UITextField *)field {
@@ -956,6 +1023,8 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
  *   2 最近播放 -> 最近播放的曲目（封面 + 歌名 + 歌手）
  */
 - (void)viewDidLoad {
+    MFCarPlayLogBoth(@"ROOT viewDidLoad");
+    MFCarPlayLogBoth(@"NOWPLAYING viewDidLoad ENTER");
     [super viewDidLoad];
 
     /* 11142666：先算缩放系数（车机屏幕尺寸各异） */
@@ -1648,6 +1717,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
  * dealloc 里必须 removeObserver，这是 ObjC 通知机制的铁律。
  */
 - (void)dealloc {
+    MFCarPlayLogBoth(@"NOWPLAYING dealloc");
     /* 取消待执行的搜索定时器，否则回调会访问已释放的 self */
     if (self.searchDebounceTimer) {
         [self.searchDebounceTimer invalidate];
@@ -1692,6 +1762,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 
 
 - (void)viewDidLoad {
+    MFCarPlayLogBoth(@"TRACKS viewDidLoad");
     [super viewDidLoad];
 
     /* 11142666：算缩放系数 */
@@ -2127,28 +2198,72 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
         BOOL catOK = NO;
         NSString *usedOptions = @"(none)";
 
-        catOK = [session setCategory:AVAudioSessionCategoryPlayback
-                         withOptions:AVAudioSessionCategoryOptionAllowBluetoothA2DP
-                               error:&err];
-        if (catOK) {
-            usedOptions = @"AllowBluetoothA2DP";
-        } else {
+        /*
+         * ================================================================
+         * 11142682：无线 CarPlay 音频配置
+         * ================================================================
+         *
+         * 用户明确：**只用无线 CarPlay**，不用有线。
+         *
+         * 无线与有线的关键差异：
+         *   有线：音频直接走 USB 通道
+         *   无线：蓝牙配对 -> WiFi 握手 -> 音频走 WiFi
+         *        需要允许与其他音频共存，否则会抢占通道导致断开
+         *
+         * 配置顺序（逐个尝试，记录哪个成功）：
+         *   1) Playback + AllowBluetoothA2DP + MixWithOthers  <- 无线首选
+         *   2) Playback + AllowBluetoothA2DP
+         *   3) Playback + MixWithOthers
+         *   4) Playback（纯）
+         */
+        AVAudioSessionCategoryOptions tries[4] = {
+            AVAudioSessionCategoryOptionAllowBluetoothA2DP |
+                AVAudioSessionCategoryOptionMixWithOthers,
+            AVAudioSessionCategoryOptionAllowBluetoothA2DP,
+            AVAudioSessionCategoryOptionMixWithOthers,
+            0
+        };
+        NSString *names[4] = {
+            @"A2DP+Mix", @"A2DP", @"Mix", @"plain"
+        };
+
+        for (int k = 0; k < 4; k++) {
             err = nil;
             catOK = [session setCategory:AVAudioSessionCategoryPlayback
-                             withOptions:0
+                             withOptions:tries[k]
                                    error:&err];
             if (catOK) {
-                usedOptions = @"none";
+                usedOptions = names[k];
+                MFCarPlayLogBoth(@"AVAudioSession: success with '%@' (尝试 #%d)",
+                      usedOptions, k + 1);
+                break;
             }
+            MFCarPlayLogBoth(@"AVAudioSession: '%@' failed err=%@ (%ld)",
+                  names[k], err.localizedDescription ?: @"(nil)", (long)err.code);
         }
 
         NSError *actErr = nil;
         BOOL actOK = [session setActive:YES withOptions:0 error:&actErr];
+        if (!actOK) {
+            MFCarPlayLogBoth(@"AVAudioSession setActive FAILED: %@ (%ld)",
+                  actErr.localizedDescription ?: @"(nil)", (long)actErr.code);
+        }
 
-        MFCarPlayLogBoth(@"AVAudioSession(windows): catOK=%d opts=%@ actOK=%d cat=%@",
-              catOK, usedOptions, actOK, session.category ?: @"(nil)");
+        /* 读当前音频路由（无线 CarPlay 应该显示 CarPlay 或 A2DP） */
+        NSString *routeDesc = @"(nil)";
+        @try {
+            AVAudioSessionPortDescription *out = session.currentRoute.outputs.firstObject;
+            if (out) {
+                routeDesc = [NSString stringWithFormat:@"%@/%@", out.portType, out.portName];
+            }
+        } @catch (NSException *e) {
+            routeDesc = @"(route read failed)";
+        }
+
+        MFCarPlayLogBoth(@"AVAudioSession FINAL: catOK=%d opts=%@ actOK=%d cat=%@ route=%@",
+              catOK, usedOptions, actOK, session.category ?: @"(nil)", routeDesc);
     } @catch (NSException *e) {
-        MFCarPlayLogBoth(@"AVAudioSession(windows) threw: %@", e.reason);
+        MFCarPlayLogBoth(@"AVAudioSession threw: %@ -- %@", e.name, e.reason);
     }
 }
 
@@ -2476,6 +2591,12 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
     willConnectToSession:(UISceneSession *)session
                  options:(UISceneConnectionOptions *)connectionOptions API_AVAILABLE(ios(13.0))
 {
+    /*
+     * 11142682：最优先安装崩溃捕获。
+     * 之后任何崩溃都会把完整堆栈写进 carplay.log。
+     */
+    MFInstallCrashHandler();
+
     NSString *sceneClass = NSStringFromClass([scene class]);
     NSString *role = session.role ?: @"(nil)";
     MFCarPlayLogBoth(@"SCENE willConnect class=%@ role=%@ mainThread=%d",
@@ -3777,6 +3898,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
 @implementation MFCarPlayWindowTopListVC
 
 - (void)viewDidLoad {
+    MFCarPlayLogBoth(@"TOPLIST viewDidLoad");
     [super viewDidLoad];
     MFScaleForSize(self.view.bounds.size);
     self.view.backgroundColor = MFCarPlayBackgroundColor();
@@ -4268,17 +4390,42 @@ static dispatch_source_t sGCDPollTimer = NULL;
 }
 
 /* 收到 JS 播放状态 */
-- (void)handleNowPlayingState:(NSDictionary *)state {
-    /* 11142672：第一行记录，验证通知到达 */
-    MFCarPlayLogBoth(@"NOWPLAYING RECV state keys=%lu", (unsigned long)state.count);
+- (void)handleNowPlayingState:(NSNotification *)note {
+    /*
+     * ================================================================
+     * 11142683：修复崩溃根因
+     * ================================================================
+     *
+     * 崩溃堆栈铁证（crash report lastExceptionBacktrace）：
+     *   5  MusicFree + 0x14d14                  <- 本方法
+     *   4  _CF_forwarding_prep_0                <- 消息转发
+     *   3  ___forwarding___
+     *   2  +[NSObject _copyDescription]
+     *   1  objc_exception_throw
+     *
+     * 原因：注册时用的是
+     *   addObserver:selector:name:object:       <- 系统传 NSNotification
+     * 但签名写成了
+     *   - (void)handleNowPlayingState:(NSDictionary *)state
+     * 导致 state 实际是 NSNotification，
+     * 调 state.count 时 NSNotification 没有这个方法
+     * -> 消息转发 -> 抛 unrecognized selector
+     * -> 桥的 dispatch block 没有 @try -> std::terminate -> abort()
+     *
+     * 修法：签名改成 NSNotification *，从 userInfo 取字典。
+     */
+    MFCarPlayLogBoth(@"NOWPLAYING handleNowPlayingState");
 
+    NSDictionary *state = note.userInfo;
     if (![state isKindOfClass:[NSDictionary class]]) {
+        MFCarPlayLogBoth(@"NOWPLAYING state userInfo not dict, ignored");
         return;
     }
-    /* 记录 JS 推送时间，让轮询避让（但轮询也会读桥，所以不会冲突） */
+
+    /* 记录 JS 推送时间，让轮询避让 */
     self.lastJSStateTime = [NSDate timeIntervalSinceReferenceDate];
 
-    /* 统一走 applyStateToUI，保证通知路径和轮询路径逻辑一致 */
+    /* 统一走 applyStateToUI */
     [self applyStateToUI:state];
     [self refreshLyricHighlight];
 }
@@ -4287,6 +4434,7 @@ static dispatch_source_t sGCDPollTimer = NULL;
  * 11142669：曲目变化时刷新标题/歌手/封面。
  */
 - (void)refreshNowPlayingContent:(NSDictionary *)state {
+    MFCarPlayLogBoth(@"NOWPLAYING refreshContent");
     NSString *title = state[@"title"] ?: @"";
     NSString *artist = state[@"artist"] ?: @"";
     NSString *album = state[@"album"] ?: @"";
@@ -4552,6 +4700,7 @@ static dispatch_source_t sGCDPollTimer = NULL;
  * 11142676：页面消失时立即停轮询，不等 dealloc。
  */
 - (void)viewWillDisappear:(BOOL)animated {
+    MFCarPlayLogBoth(@"NOWPLAYING viewWillDisappear");
     [super viewWillDisappear:animated];
     if (self.progressPollTimer) {
         [self.progressPollTimer invalidate];
@@ -4640,6 +4789,7 @@ static dispatch_source_t sGCDPollTimer = NULL;
  * 和进度一样，绕开通知机制。
  */
 - (void)pollLyricFromBridge {
+    MFCarPlayLogBoth(@"NOWPLAYING pollLyric");
     MFCarPlayBridge *bridge = [MFCarPlayBridge shared];
     if (!bridge) {
         return;
@@ -4672,6 +4822,7 @@ static dispatch_source_t sGCDPollTimer = NULL;
  * 避免两处代码不一致。
  */
 - (void)applyStateToUI:(NSDictionary *)state {
+    MFCarPlayLogBoth(@"NOWPLAYING applyStateToUI");
     if (![state isKindOfClass:[NSDictionary class]]) {
         return;
     }
@@ -4831,6 +4982,7 @@ static dispatch_source_t sGCDPollTimer = NULL;
 }
 
 - (void)onCoverTap {
+    MFCarPlayLogBoth(@"NOWPLAYING onCoverTap");
     /*
      * ============ 11142676：切歌词闪退加固 ============
      *
@@ -4907,6 +5059,7 @@ static dispatch_source_t sGCDPollTimer = NULL;
 
 /* 懒建歌词表格 */
 - (void)buildLyricTableIfNeeded {
+    MFCarPlayLogBoth(@"NOWPLAYING buildLyricTable");
     if (self.lyricTable) {
         return;
     }
@@ -5072,6 +5225,7 @@ static dispatch_source_t sGCDPollTimer = NULL;
 }
 
 - (void)refreshLyricHighlight {
+    MFCarPlayLogBoth(@"NOWPLAYING refreshLyricHighlight");
     /*
      * ============ 11142664：闪退修复 ============
      *
@@ -5190,6 +5344,7 @@ static dispatch_source_t sGCDPollTimer = NULL;
 
 /* 收到歌词推送时刷新 */
 - (void)handleLyricUpdate:(NSNotification *)note {
+    MFCarPlayLogBoth(@"NOWPLAYING handleLyricUpdate");
     NSArray *lines = note.userInfo[@"lines"];
     if (![lines isKindOfClass:[NSArray class]]) {
         return;
