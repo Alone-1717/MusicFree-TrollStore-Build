@@ -15,7 +15,49 @@ import { NativeEventEmitter, NativeModules, Platform } from "react-native";
 import MusicSheet from "@/core/musicSheet";
 import { MusicRepeatMode } from "@/constants/repeatModeConst";
 import PluginManager from "@/core/pluginManager";
-import { State } from "react-native-track-player";
+import ReactNativeTrackPlayer, { State } from "react-native-track-player";
+
+/*
+ * ================================================================
+ * 11142690：修复 isPlaying 永远为 0
+ * ================================================================
+ *
+ * 日志证据：
+ *   [STATE] apply #361...#416  playing=0  （67 条全是 0）
+ *
+ * 根因：
+ *   TrackPlayer.getPlaybackState() 这个方法**不存在**！
+ *   src/core/trackPlayer/index.ts 里只代理了：
+ *     getProgress / getRate / setRate / reset
+ *   而 getPlaybackState 只有内部直接用 ReactNativeTrackPlayer 调用。
+ *
+ *   try/catch 把 "not a function" 异常静默吞掉，
+ *   导致 isPlaying 永远是初始值 0 -> 播放/暂停图标永远不变。
+ *
+ * 修法：直接用 ReactNativeTrackPlayer.getPlaybackState()
+ */
+function mfGetPlaybackStateSafe(): number {
+    try {
+        const st: any = (ReactNativeTrackPlayer as any).getPlaybackState?.();
+        // 同步返回值可能是 Promise，这里是 sync 的 State 值
+        const v = st?.state;
+        if (v === undefined) return 0;
+        return (v === State.Playing || v === 3) ? 1 : 0;
+    } catch (e) {
+        return 0;
+    }
+}
+
+async function mfGetPlaybackStateAsync(): Promise<number> {
+    try {
+        const st: any = await (ReactNativeTrackPlayer as any).getPlaybackState?.();
+        const v = st?.state;
+        if (v === undefined) return 0;
+        return (v === State.Playing || v === 3) ? 1 : 0;
+    } catch (e) {
+        return 0;
+    }
+}
 import TrackPlayer from "@/core/trackPlayer";
 import { errorLog, trace } from "@/utils/log";
 import { getDefaultStore } from "jotai";
@@ -344,9 +386,7 @@ async function handleControl(action: string) {
                 {
                     let cur = 0;
                     try {
-                        const st = await TrackPlayer.getPlaybackState();
-                        const v = st?.state;
-                        cur = (v === State.Playing || v === 3) ? 1 : 0;
+                        cur = await mfGetPlaybackStateAsync();
                     } catch (e) {
                         cur = 0;
                     }
@@ -670,19 +710,8 @@ async function pushNowPlayingState() {
 
         let isPlaying = 0;
         try {
-            const st = await TrackPlayer.getPlaybackState();
-            /* react-native-track-player 的 State.Playing = 3 */
-            /*
-             * 11142671：用 State 枚举判断，不硬编码。
-             *
-             * 日志显示 playing 永远是 0，说明 state === 3 判断失效。
-             * react-native-track-player 的 State 枚举：
-             *   None=0, Ready=1, Playing=3, Paused=2, Stopped=5,
-             *   Buffering=6, Loading=8, Ended=9
-             * 但不同版本值可能变，用枚举最稳。
-             */
-            const stVal = st?.state;
-            isPlaying = (stVal === State.Playing || stVal === 3) ? 1 : 0;
+            /* 11142690：改用 ReactNativeTrackPlayer（TrackPlayer 无此方法） */
+            isPlaying = await mfGetPlaybackStateAsync();
         } catch (e) {
             /* 忽略 */
         }
@@ -881,18 +910,7 @@ export function setupCarPlay() {
                 /* 未播放 */
             }
             try {
-                const st = await TrackPlayer.getPlaybackState();
-                /*
-             * 11142671：用 State 枚举判断，不硬编码。
-             *
-             * 日志显示 playing 永远是 0，说明 state === 3 判断失效。
-             * react-native-track-player 的 State 枚举：
-             *   None=0, Ready=1, Playing=3, Paused=2, Stopped=5,
-             *   Buffering=6, Loading=8, Ended=9
-             * 但不同版本值可能变，用枚举最稳。
-             */
-            const stVal = st?.state;
-            isPlaying = (stVal === State.Playing || stVal === 3) ? 1 : 0;
+                isPlaying = await mfGetPlaybackStateAsync();   /* 11142690: TrackPlayer 无此方法 */
             } catch (e) {
                 /* 忽略 */
             }

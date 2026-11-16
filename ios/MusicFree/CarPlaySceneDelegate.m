@@ -413,7 +413,7 @@ static void MFAddTopTitle(UIViewController *vc, NSString *title) {
  * 设计：
  *   QWERTY 三行字母 + 一行功能键（退格 / 空格 / 清除）
  *   车机屏 1066x480，每行 10 键，单键约 92x44，触摸友好。
- *   输入内容直接拼进 UITextField.text，再触发搜索。
+ *   输入内容直接拼进 UITextField 的 text 属性，再触发搜索。
  *
  * 拼音：
  *   中文歌名打不出来 —— 用 CFStringTransform 把汉字转拼音，
@@ -1188,7 +1188,7 @@ static void MFInstallCrashHandler(void) {
 
 /* 键盘 return 键 -> 执行搜索 */
 - (BOOL)textFieldShouldReturn:(UITextField *)textField {
-    [self doSearch:textField.text];
+    [self doSearch:textField.text ?: @""];   /* 11142690: text 可能为 nil */
     [textField resignFirstResponder];
     return YES;
 }
@@ -1200,7 +1200,7 @@ static void MFInstallCrashHandler(void) {
      * 注意：这个方法需要 addTarget:forControlEvents: 注册，
      * 见 viewDidLoad 里的 UIControlEventEditingChanged。
      */
-    [self doSearch:textField.text];
+    [self doSearch:textField.text ?: @""];   /* 11142690: text 可能为 nil */
 }
 
 - (void)doSearch:(NSString *)query {
@@ -1903,7 +1903,7 @@ static void MFInstallCrashHandler(void) {
     /*
      * 数据源快照：currentRootSections 每次构建时写入。
      * 指纹计算和上屏探针都从这里取，绝不读 CPListSection.items /
-     * CPListItem.text（非公开 API，读了是 unrecognized selector）。
+     * CPListItem 的 text（非公开 API，读了是 unrecognized selector）。
      */
     NSArray *_lastSheetsSnapshot;
     /* 上一次真正推送给 updateSections: 的内容指纹，用于去重防闪烁 */
@@ -2982,7 +2982,7 @@ static void MFInstallCrashHandler(void) {
      * 每次构建 sections 时，把**数据源快照**存下来。
      *
      * 用途：指纹计算和上屏探针都改从这里取，不再去读 CPListSection.items /
-     * CPListItem.text —— 那两个都不是公开 API，读了是 unrecognized selector
+     * CPListItem 的 text —— 那两个都不是公开 API，读了是 unrecognized selector
      * 崩溃。快照是我自己的数据，绝对安全。
      */
     _lastSheetsSnapshot = [sheetItems isKindOfClass:[NSArray class]] ? sheetItems : @[];
@@ -3632,7 +3632,7 @@ static void MFInstallCrashHandler(void) {
  * sections 内容指纹：反映"当前 UI 该显示什么"，不只是"数据数组长什么样"。
  *
  * ============ 为什么不再遍历 CPListSection / CPListItem ============
- *   CPListSection.items、CPListItem.text / detailText **都不是公开 API**。
+ *   CPListSection.items、CPListItem 的 text / detailText **都不是公开 API**。
  *   之前我在 clang 桩里顺手声明了它们，编译期静默放行，真机上却是
  *   unrecognized selector 直接 crash。现在改为对数据快照计算。
  *
@@ -4039,6 +4039,17 @@ static dispatch_source_t sGCDPollTimer = NULL;
     dim.alpha = 0.55;
     dim.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:dim];
+
+    /*
+     * 11142688：背景图约束（上次重写布局时丢了，导致全黑）
+     * 铺满整个屏幕
+     */
+    [NSLayoutConstraint activateConstraints:@[
+        [self.backgroundImageView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [self.backgroundImageView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [self.backgroundImageView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.backgroundImageView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+    ]];
     [NSLayoutConstraint activateConstraints:@[
         [dim.topAnchor constraintEqualToAnchor:self.view.topAnchor],
         [dim.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
@@ -4310,30 +4321,41 @@ static dispatch_source_t sGCDPollTimer = NULL;
         [self.durationLabel.widthAnchor constraintEqualToConstant:MFS(80)],
         [self.durationLabel.bottomAnchor constraintEqualToAnchor:self.progressView.topAnchor constant:-MFS(28)],
 
-        [play.centerXAnchor constraintEqualToAnchor:v.centerXAnchor constant:-MFS(8)],
+        /* ---------- 播放键（基准） ---------- */
+        /* 11142689：播放键真正居中（去掉 -8 偏移） */
+        [play.centerXAnchor constraintEqualToAnchor:v.centerXAnchor],
         [play.bottomAnchor constraintEqualToAnchor:self.timeLabel.topAnchor constant:-MFS(8)],
         [play.widthAnchor constraintEqualToConstant:MFS(72)],
         [play.heightAnchor constraintEqualToConstant:MFS(52)],
 
+        /* ---------- 上一首：间隔 12 ---------- */
         [prev.trailingAnchor constraintEqualToAnchor:play.leadingAnchor constant:-MFS(12)],
         [prev.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
         [prev.widthAnchor constraintEqualToConstant:MFS(70)],
         [prev.heightAnchor constraintEqualToConstant:MFS(52)],
 
-        [next.leadingAnchor constraintEqualToAnchor:play.trailingAnchor constant:MFS(45)],
+        /*
+         * 11142688：下一首间隔与上一首一致（12）
+         * 原来 45 太宽，用户要求改小
+         */
+        [next.leadingAnchor constraintEqualToAnchor:play.trailingAnchor constant:MFS(12)],
         [next.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
-        [next.widthAnchor constraintEqualToConstant:MFS(72)],
+        [next.widthAnchor constraintEqualToConstant:MFS(70)],
         [next.heightAnchor constraintEqualToConstant:MFS(52)],
 
-        [self.favoriteButton.leadingAnchor constraintEqualToAnchor:next.trailingAnchor constant:MFS(32)],
-        [self.favoriteButton.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
-        [self.favoriteButton.widthAnchor constraintEqualToConstant:MFS(55)],
-        [self.favoriteButton.heightAnchor constraintEqualToConstant:MFS(52)],
+        /*
+         * 11142688：爱心/模式缩小一半（宽高 26），底部与其它按钮平齐
+         * 用 bottom 对齐 play.bottom，不是 centerY
+         */
+        [self.favoriteButton.leadingAnchor constraintEqualToAnchor:next.trailingAnchor constant:MFS(28)],
+        [self.favoriteButton.bottomAnchor constraintEqualToAnchor:play.bottomAnchor],
+        [self.favoriteButton.widthAnchor constraintEqualToConstant:MFS(28)],
+        [self.favoriteButton.heightAnchor constraintEqualToConstant:MFS(26)],
 
-        [self.repeatButton.leadingAnchor constraintEqualToAnchor:self.favoriteButton.trailingAnchor constant:MFS(18)],
-        [self.repeatButton.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
-        [self.repeatButton.widthAnchor constraintEqualToConstant:MFS(55)],
-        [self.repeatButton.heightAnchor constraintEqualToConstant:MFS(52)],
+        [self.repeatButton.leadingAnchor constraintEqualToAnchor:self.favoriteButton.trailingAnchor constant:MFS(14)],
+        [self.repeatButton.bottomAnchor constraintEqualToAnchor:play.bottomAnchor],
+        [self.repeatButton.widthAnchor constraintEqualToConstant:MFS(28)],
+        [self.repeatButton.heightAnchor constraintEqualToConstant:MFS(26)],
     ]];
 
     self.lastRenderedTitle = title;
@@ -4541,7 +4563,8 @@ static dispatch_source_t sGCDPollTimer = NULL;
     NSString *sym = [NSString stringWithCharacters:&code length:1];
     [b setTitle:sym forState:0];
     [b setTitleColor:[UIColor colorWithRed:0.75 green:0.75 blue:0.78 alpha:1.0] forState:0];
-    b.titleLabel.font = MFFont(24.0);
+    /* 11142688：按钮缩小到 28x26，字体也降到 16 */
+    b.titleLabel.font = MFFont(16.0);
     b.backgroundColor = MFCarPlayCardColor();
     /* 11142674：和播放键统一 10pt 圆角 */
     b.layer.cornerRadius = MFS(10.0);
@@ -4906,6 +4929,11 @@ static dispatch_source_t sGCDPollTimer = NULL;
 
     /* 播放/暂停图标 */
     if (isPlaying && self.playPauseButton) {
+        /*
+         * 11142688：修正图标含义
+         *   isPlaying=1 -> 显示 ⏸ (U+23F8 两竖线，表示"点它能暂停")
+         *   isPlaying=0 -> 显示 ▶ (U+25B6 三角形，表示"点它能播放")
+         */
         unichar code = isPlaying.boolValue ? 0x23F8 : 0x25B6;
         NSString *sym = [NSString stringWithCharacters:&code length:1];
         [self.playPauseButton setTitle:sym forState:0];
@@ -4959,6 +4987,17 @@ static dispatch_source_t sGCDPollTimer = NULL;
         ![newTitle isEqualToString:self.lastRenderedTitle ?: @""]) {
         MFCarPlayLogBoth(@"[TRACK] changed: '%@' -> '%@'",
               self.lastRenderedTitle ?: @"(none)", newTitle);
+
+        /*
+         * 11142688：切歌时清空旧歌词，避免和封面/歌名对不上
+         * （等新歌词推过来再填）
+         */
+        self.lyricLines = @[];
+        self.currentLyricIndex = -1;
+        if (self.lyricTable) {
+            MFSafeReload(self.lyricTable, @"LYRIC-CLEAR");
+        }
+
         [self refreshNowPlayingContent:state];
     }
 }
@@ -5282,8 +5321,24 @@ static dispatch_source_t sGCDPollTimer = NULL;
         return;
     }
     /* 左右各留 16，居中 */
-    cell.textLabel.frame = CGRectMake(16, 0, w - 32, h * 0.65);
-    cell.detailTextLabel.frame = CGRectMake(16, h * 0.6, w - 32, h * 0.4);
+    /*
+     * 11142688：歌词居中
+     * 原来 frame 高度只有 65%，label 靠顶 -> 偏上。
+     * 无翻译时 textLabel 占满整个 cell；有翻译时上下分。
+     */
+    /* 11142690：用局部变量避免直接读 detailTextLabel 的 text */
+    SEL txtSel = NSSelectorFromString(@"text");
+    NSString *trText = ([cell.detailTextLabel respondsToSelector:txtSel]
+        ? (NSString *)[cell.detailTextLabel performSelector:txtSel]
+        : nil);
+    if (trText && trText.length > 0) {
+        cell.textLabel.frame = CGRectMake(0, 0, w, h * 0.62);
+        cell.detailTextLabel.frame = CGRectMake(0, h * 0.58, w, h * 0.40);
+        cell.detailTextLabel.textAlignment = NSTextAlignmentCenter;
+    } else {
+        cell.textLabel.frame = CGRectMake(0, 0, w, h);
+        cell.detailTextLabel.frame = CGRectZero;
+    }
     cell.textLabel.textAlignment = NSTextAlignmentCenter;
     cell.detailTextLabel.textAlignment = NSTextAlignmentCenter;
 }
