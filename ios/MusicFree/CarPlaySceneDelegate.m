@@ -392,6 +392,35 @@ static NSDictionary *MFHotLayout(void) {
  * 读一个布局数值，读不到返回默认值。
  * 注意：返回值已经乘过缩放，直接用于约束。
  */
+/*
+ * ================================================================
+ * 11142707：MFLor —— 两段式键名回退
+ * ================================================================
+ * 用途：progressLeft / progressRight 优先，
+ *       没写就用旧键 progressSide，再没有用 fallback。
+ * 这样新老 layout.json 都能生效。
+ */
+static CGFloat MFLor(NSString *key1, NSString *key2, CGFloat fallback) {
+    NSDictionary *cfg = MFHotLayout();
+    if (cfg) {
+        id v = cfg[key1];
+        if ([v isKindOfClass:[NSNumber class]]) {
+            CGFloat n = (CGFloat)[(NSNumber *)v doubleValue];
+            if (n > 0) {
+                return MFS(n);
+            }
+        }
+        v = cfg[key2];
+        if ([v isKindOfClass:[NSNumber class]]) {
+            CGFloat n = (CGFloat)[(NSNumber *)v doubleValue];
+            if (n > 0) {
+                return MFS(n);
+            }
+        }
+    }
+    return MFS(fallback);
+}
+
 static CGFloat MFL(NSString *key, CGFloat fallback) {
     NSDictionary *cfg = MFHotLayout();
     if (cfg) {
@@ -4512,9 +4541,9 @@ static dispatch_source_t sGCDPollTimer = NULL;
         [self.artistLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(80)],
 
         [self.progressView.bottomAnchor constraintEqualToAnchor:v.bottomAnchor constant:-MFL(@"progressBottom", 18)],
-        /* 11142706：左右边距拆开，可分别调（往右移就加大 progressLeft） */
-            [self.progressView.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFL(@"progressLeft", 40)],
-        [self.progressView.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFL(@"progressRight", 40)],
+        /* 11142706/11142707：左右边距可分别调；没写则回退到 progressSide */
+            [self.progressView.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFLor(@"progressLeft", @"progressSide", 40)],
+        [self.progressView.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFLor(@"progressRight", @"progressSide", 40)],
         [self.progressView.heightAnchor constraintEqualToConstant:MFL(@"progressHeight", 6)],
 
         [self.timeLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFL(@"timeSide", 98)],
