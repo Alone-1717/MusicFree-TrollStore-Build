@@ -1,0 +1,155 @@
+name: Build MusicFree TrollStore TIPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      new_arch:
+        description: '启用 New Architecture (0/1)'
+        required: false
+        default: '0'
+        type: choice
+        options: ['0', '1']
+      sign_tool:
+        description: '签名方式（默认 auto：主二进制写 entitlements 防 get-task-allow，嵌套 framework 逐个签）'
+        required: false
+        default: 'auto'
+        type: choice
+        options: ['none', 'auto', 'ldid', 'codesign']
+  push:
+    branches: [master, main]
+    paths:
+      - 'scripts/build-trollstore.sh'
+      - 'scripts/trollstore*.plist'
+      - 'src/native/**'
+      - 'ios/**'
+      - '.github/workflows/build-trollstore.yml'
+
+jobs:
+  build-tipa:
+    # macOS runner 才能跑 xcodebuild / CocoaPods / codesign
+    # 注意：实测该账号上 macos-14 已不再派活（job 秒 cancelled / 0 step），
+    # macos-15 与 macos-latest 正常。固定 macos-15 避免镜像漂移。
+    runs-on: macos-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Setup Ruby / CocoaPods
+        run: |
+          ruby --version
+          gem install cocoapods -v '~> 1.15' --no-document || true
+          pod --version || sudo gem install cocoapods --no-document
+          pod --version
+
+      # 必须是硬依赖：主二进制要写 entitlements，嵌套 framework 要逐个 ad-hoc 签
+      - name: Install ldid
+        run: |
+          brew install ldid || brew upgrade ldid || true
+          ldid -h 2>&1 | head -3 || true
+          command -v ldid >/dev/null || (echo "::error::ldid unavailable"; exit 1)
+
+      - name: Cache CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: |
+            ios/Pods
+            ~/Library/Caches/CocoaPods
+          key: ${{ runner.os }}-pods-${{ hashFiles('ios/Podfile.lock', 'package-lock.json') }}
+          restore-keys: ${{ runner.os }}-pods-
+
+      - name: Ensure AppIcon set
+        run: |
+          # 图标已随仓库提交（18 张全尺寸）。只做完整性校验；缺了才现场生成。
+          # macOS runner 的 python3 是 externally-managed，直接 pip install 会报
+          # error: externally-managed-environment，所以需要时走 venv。
+          ICON_DIR=ios/MusicFree/Images.xcassets/AppIcon.appiconset
+          COUNT=$(ls -1 "$ICON_DIR"/*.png 2>/dev/null | wc -l | tr -d ' ')
+          echo "existing icon png count: $COUNT"
+          if [ "$COUNT" -lt 9 ]; then
+            echo "::warning::$COUNT icons present, regenerating from logo.png"
+            python3 -m venv .iconvenv
+            ./.iconvenv/bin/python -m pip install --quiet --upgrade pip
+            ./.iconvenv/bin/python -m pip install --quiet Pillow
+            ./.iconvenv/bin/python scripts/gen_ios_icons.py
+          fi
+          ls -1 "$ICON_DIR" | head -25
+          test -f "$ICON_DIR/Contents.json"
+          # 用 Apple 标准命名占位（此前是 icon-ios-marketing-1024x1024@1x.png，
+          # 那种命名会让 Xcode 把文件名注册成 Assets.car 资源名，
+          # 导致 CFBundleIconName=AppIcon 索引不到 → 多任务卡片无图标）
+          test -f "$ICON_DIR/AppIcon1024x1024@1x.png"
+          test -f "$ICON_DIR/AppIcon60x60@2x.png"
+          test -f "$ICON_DIR/AppIcon60x60@3x.png"
+          echo "AppIcon set OK (standard naming)"
+
+      - name: Static self-check (iOS shims / plist / project)
+        run: |
+          # 上游 .gitignore 含 scripts/，确认四个新增脚本确实被 checkout 进来
+          for f in \
+            scripts/verify-ios-patch.mjs \
+            scripts/build-trollstore.sh \
+            scripts/trollstore.entitlements.plist \
+            scripts/trollstore-full-access.entitlements.plist; do
+            test -f "$f" || { echo "::error::缺失 $f —— 检查 .gitignore 白名单是否随 fork 带过来"; exit 1; }
+          done
+          node scripts/verify-ios-patch.mjs
+
+      - name: Build unsigned archive → Payload → .tipa
+        env:
+          NEW_ARCH: ${{ inputs.new_arch || '0' }}
+          SIGN_TOOL: ${{ inputs.sign_tool || 'auto' }}
+        run: |
+          chmod +x scripts/build-trollstore.sh
+          bash scripts/build-trollstore.sh
+
+      - name: List build artifacts
+        if: always()
+        run: |
+          echo "== build/ =="
+          ls -lh build/ || true
+          echo "== xcodebuild.log tail (on failure) =="
+          tail -n 120 build/xcodebuild.log 2>/dev/null || true
+
+      - name: Upload TIPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: MusicFree-TrollStore-${{ github.sha }}
+          path: build/*.tipa
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log-${{ github.sha }}
+          path: build/xcodebuild.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Summary
+        run: |
+          {
+            echo "## MusicFree TrollStore 构建结果"
+            echo ""
+            echo "- 产物：\`build/MusicFree.trollstore.tipa\`"
+            echo "- Bundle ID：\`app.musicfree.ios\`"
+            echo "- New Architecture：\`${NEW_ARCH:-0}\`"
+            echo "- 签名方式：\`${SIGN_TOOL:-auto}\`（免 Apple 证书，TrollStore 安装时伪签）"
+            echo ""
+            echo "下载 artifact 后改名为 \`.tipa\`，直接丢进 TrollStore 安装。"
+          } >> "$GITHUB_STEP_SUMMARY"
