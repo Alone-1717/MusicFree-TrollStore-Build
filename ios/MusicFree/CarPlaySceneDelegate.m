@@ -4945,8 +4945,8 @@ MFCarPlayLogBoth(@"[VDL] progressTap done");
      * 但这是播放页专用定时器，页面退出就停，可接受。
      */
     dispatch_source_set_timer(timer,
-                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
-                              (uint64_t)(0.3 * NSEC_PER_SEC),
+                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
+                              (uint64_t)(0.1 * NSEC_PER_SEC),
                               (uint64_t)(0.05 * NSEC_PER_SEC));
 
     dispatch_source_set_event_handler(timer, ^{
@@ -5116,7 +5116,7 @@ MFCarPlayLogBoth(@"[VDL] progressTap done");
 
     /* 11142677：改成实例变量 */
     self.applyCount++;
-    if (self.applyCount % 5 == 1) {
+    if (self.applyCount % 20 == 1) {
         MFCarPlayLogBoth(@"[STATE] apply #%d title=%@ pos=%@/%@ playing=%@ fav=%@ rep=%@",
               self.applyCount,
               state[@"title"] ?: @"-",
@@ -5701,23 +5701,39 @@ MFCarPlayLogBoth(@"[VDL] progressTap done");
     UILabel *mfLyric = [mfLyricRaw2 isKindOfClass:[UILabel class]]
         ? (UILabel *)mfLyricRaw2 : nil;
     if (mfLyric) {
+        /*
+         * 11142705：修正歌词水平居中
+         * ================================================================
+         * 日志证据：
+         *   tableView 宽 = 986.7
+         *   cell 宽      = 711.7   <- 比 tableView 窄 275
+         *   mfLyric 设为 {0,0,986.7} -> 中心右偏 137.5
+         * 修法：mfLyric 相对 contentView 左移 (cellW - tblW)/2，
+         *       使其中心 = cellW/2 = cell 中心 = tableView 中心
+         */
+        CGFloat cellW = cell.bounds.size.width;
+        CGFloat xOff = (cellW - w) / 2.0;
+        cell.contentView.clipsToBounds = NO;
+        cell.clipsToBounds = NO;
+
         BOOL hasTrans = (trText && trText.length > 0);
         if (hasTrans) {
-            mfLyric.frame = CGRectMake(0, 0, w, h * 0.62);
-            cell.detailTextLabel.frame = CGRectMake(0, h * 0.60, w, h * 0.38);
+            mfLyric.frame = CGRectMake(xOff, 0, w, h * 0.62);
+            cell.detailTextLabel.frame = CGRectMake(xOff, h * 0.60, w, h * 0.38);
         } else {
-            mfLyric.frame = CGRectMake(0, 0, w, h);
+            mfLyric.frame = CGRectMake(xOff, 0, w, h);
             cell.detailTextLabel.frame = CGRectZero;
         }
         mfLyric.textAlignment = NSTextAlignmentCenter;
+        mfLyric.backgroundColor = [UIColor clearColor];
     
         static NSInteger sHCnt2 = 0;
         sHCnt2++;
         if (sHCnt2 <= 5) {
             NSString *tx = mfLyric.text ?: @"";
             if (tx.length > 12) { tx = [tx substringToIndex:12]; }
-            MFCarPlayLogBoth(@"[HCENTER] tblW=%.1f lyricFrame=%@ align=%ld text=%@",
-                  w, NSStringFromCGRect(mfLyric.frame),
+            MFCarPlayLogBoth(@"[HCENTER] cellW=%.1f tblW=%.1f xOff=%.1f frame=%@ align=%ld text=%@",
+                  cellW, w, xOff, NSStringFromCGRect(mfLyric.frame),
                   (long)mfLyric.textAlignment, tx);
         }
     }
@@ -5831,7 +5847,7 @@ MFCarPlayLogBoth(@"[VDL] progressTap done");
         @try {
             [self.lyricTable scrollToRowAtIndexPath:[NSIndexPath indexPathForRow:target inSection:0]
                                    atScrollPosition:UITableViewScrollPositionMiddle
-                                           animated:YES];
+                                           animated:NO];
             MFCarPlayLogBoth(@"LYRIC scroll to row %ld (prog=%.1f, total=%ld)",
                   (long)target, prog, (long)count);
         } @catch (NSException *e) {
