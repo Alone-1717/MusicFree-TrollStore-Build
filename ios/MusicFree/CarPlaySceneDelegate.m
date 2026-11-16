@@ -248,52 +248,23 @@ static void MFSafeReload(UITableView *tv, NSString *tag) {
     if (!tv) {
         return;
     }
+    if (![tv isKindOfClass:[UITableView class]]) {
+        return;
+    }
     @try {
         [tv reloadData];
     } @catch (NSException *e) {
-        MFCarPlayLogBoth(@"RELOAD(%@) threw: %@ -- %@", tag ?: @"?",
-              e.name, e.reason);
+        MFCarPlayLogBoth(@"RELOAD(%@) threw: %@ -- %@", tag, e.name, e.reason);
     }
 }
 
-/*
- * ============ 11142666：自适应缩放 ============
- *
- * 问题：之前所有尺寸都是硬编码（220 封面、76 行高、19 号字…），
- * 在你 1066x480 的车机上刚好，换个 800x480 或 1280x720 的屏幕就错位。
- *
- * 方案：以 1066x480（横向）为基准，按屏幕实际尺寸算缩放系数。
- *
- *   scaleW = 实际宽 / 1066
- *   scaleH = 实际高 / 480
- *   scale  = min(scaleW, scaleH)     取小的，保证不溢出
- *
- * 然后把 scale 夹到 [0.75, 1.6] 之间：
- *   - 太小（< 0.75）字会看不清
- *   - 太大（> 1.6）布局会撑破
- *
- * 用函数而不是宏，方便调试时打日志。
- */
-
-/* 基准尺寸（我们一开始按这个调的） */
-static const CGFloat kMFBaseWidth = 1066.0;
-static const CGFloat kMFBaseHeight = 480.0;
-
-/* 当前界面的缩放系数（每个 VC 在 viewDidLayoutSubviews 里刷新） */
+/* 屏幕缩放比例（1066x480 为基准） */
 static CGFloat sMFScale = 1.0;
-static CGSize sMFScreenSize = {1066.0, 480.0};
 
-/* 根据屏幕尺寸计算并缓存缩放系数 */
-static CGFloat MFScaleForSize(CGSize size) {
-    if (size.width <= 0 || size.height <= 0) {
-        return 1.0;
-    }
-    sMFScreenSize = size;
-    CGFloat sw = size.width / kMFBaseWidth;
-    CGFloat sh = size.height / kMFBaseHeight;
-    CGFloat s = sw < sh ? sw : sh;
-
-    /* 夹逼，避免极端值 */
+static CGFloat MFScaleForSize(CGSize screen) {
+    CGFloat sw = screen.width > 0 ? screen.width : 1066.0;
+    CGFloat sh = screen.height > 0 ? screen.height : 480.0;
+    CGFloat s = MIN(sw / 1066.0, sh / 480.0);
     if (s < 0.75) {
         s = 0.75;
     }
@@ -304,14 +275,8 @@ static CGFloat MFScaleForSize(CGSize size) {
     return s;
 }
 
-/* 读当前缩放系数（未初始化则 1.0） */
-static CGFloat MFScale(void) {
-    return sMFScale;
-}
-
-/* 按比例缩放一个数值 */
-static CGFloat MFS(CGFloat v) {
-    return v * sMFScale;
+static CGFloat MFS(CGFloat value) {
+    return value * sMFScale;
 }
 
 /* 按比例缩放字体（字号跟着变，但保留最小可读值） */
@@ -4301,65 +4266,71 @@ static dispatch_source_t sGCDPollTimer = NULL;
 
     /* ---------- 歌名（大字，居中） ---------- */
     [NSLayoutConstraint activateConstraints:@[
+        /* ---------- 歌名 ---------- */
         [self.titleLabel.topAnchor constraintEqualToAnchor:v.topAnchor constant:MFS(12)],
-        [self.titleLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(120)],
-        [self.titleLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(120)],
+        [self.titleLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(140)],
+        [self.titleLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(140)],
 
-        /* ---------- 歌手 · 专辑 ---------- */
+        /* ---------- 歌手 / 专辑 ---------- */
         [self.artistLabel.topAnchor constraintEqualToAnchor:self.titleLabel.bottomAnchor constant:MFS(4)],
-        [self.artistLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(120)],
-        [self.artistLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(120)],
+        [self.artistLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(140)],
+        [self.artistLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(140)],
 
-        /* ---------- 封面（居中） ---------- */
+        /* ---------- 封面 140×140 ---------- */
         [self.coverView.topAnchor constraintEqualToAnchor:self.artistLabel.bottomAnchor constant:MFS(8)],
         [self.coverView.centerXAnchor constraintEqualToAnchor:v.centerXAnchor],
-        [self.coverView.widthAnchor constraintEqualToConstant:MFS(160)],
-        [self.coverView.heightAnchor constraintEqualToConstant:MFS(160)],
+        [self.coverView.widthAnchor constraintEqualToConstant:MFS(140)],
+        [self.coverView.heightAnchor constraintEqualToConstant:MFS(140)],
 
-        /* ---------- 进度条（按钮上方） ---------- */
-        [self.progressView.topAnchor constraintEqualToAnchor:self.coverView.bottomAnchor constant:MFS(10)],
+        /* ---------- 进度条 ---------- */
+        [self.progressView.topAnchor constraintEqualToAnchor:self.coverView.bottomAnchor constant:MFS(12)],
         [self.progressView.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(80)],
         [self.progressView.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(80)],
         [self.progressView.heightAnchor constraintEqualToConstant:MFS(6)],
 
-        /* ---------- 时间：左 0:12 / 右 4:06 ---------- */
-        [self.timeLabel.topAnchor constraintEqualToAnchor:self.progressView.bottomAnchor constant:MFS(6)],
+        /* ---------- 时间：左当前 / 右总长 ---------- */
+        [self.timeLabel.topAnchor constraintEqualToAnchor:self.progressView.bottomAnchor constant:MFS(4)],
         [self.timeLabel.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:MFS(80)],
-        [self.timeLabel.widthAnchor constraintEqualToConstant:MFS(100)],
+        [self.timeLabel.widthAnchor constraintEqualToConstant:MFS(80)],
 
-        /* 右侧时间（挂在进度条右端下面） */
-        [self.durationLabel.topAnchor constraintEqualToAnchor:self.progressView.bottomAnchor constant:MFS(6)],
+        [self.durationLabel.topAnchor constraintEqualToAnchor:self.progressView.bottomAnchor constant:MFS(4)],
         [self.durationLabel.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(80)],
-        [self.durationLabel.widthAnchor constraintEqualToConstant:MFS(100)],
+        [self.durationLabel.widthAnchor constraintEqualToConstant:MFS(80)],
 
-        /* ---------- 播放键（居中，最大） ---------- */
-        [play.topAnchor constraintEqualToAnchor:self.timeLabel.bottomAnchor constant:MFS(8)],
-        [play.centerXAnchor constraintEqualToAnchor:v.centerXAnchor],
-        [play.widthAnchor constraintEqualToConstant:MFS(96)],
-        [play.heightAnchor constraintEqualToConstant:MFS(64)],
+        /* ============================================================
+         * ---------- 按钮行：全部横向排列 ----------
+         *   [<<]  [>]  [>>]      [♡] [↻]
+         * ============================================================ */
 
-        /* 上一首（略小） */
-        [prev.trailingAnchor constraintEqualToAnchor:play.leadingAnchor constant:-MFS(24)],
+        /* 播放键：居中偏左 100，给右侧功能键留位 */
+        [play.topAnchor constraintEqualToAnchor:self.timeLabel.bottomAnchor constant:MFS(10)],
+        [play.centerXAnchor constraintEqualToAnchor:v.centerXAnchor constant:-MFS(100)],
+        [play.widthAnchor constraintEqualToConstant:MFS(90)],
+        [play.heightAnchor constraintEqualToConstant:MFS(56)],
+
+        /* 上一首 */
+        [prev.trailingAnchor constraintEqualToAnchor:play.leadingAnchor constant:-MFS(16)],
         [prev.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
         [prev.widthAnchor constraintEqualToConstant:MFS(80)],
         [prev.heightAnchor constraintEqualToConstant:MFS(52)],
 
-        /* 下一首（略小） */
-        [next.leadingAnchor constraintEqualToAnchor:play.trailingAnchor constant:MFS(24)],
+        /* 下一首 */
+        [next.leadingAnchor constraintEqualToAnchor:play.trailingAnchor constant:MFS(16)],
         [next.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
         [next.widthAnchor constraintEqualToConstant:MFS(80)],
         [next.heightAnchor constraintEqualToConstant:MFS(52)],
 
-        /* ---------- 功能键（播放键下方，居中一组） ---------- */
-        [self.favoriteButton.topAnchor constraintEqualToAnchor:play.bottomAnchor constant:MFS(6)],
-        [self.favoriteButton.centerXAnchor constraintEqualToAnchor:v.centerXAnchor constant:-MFS(40)],
-        [self.favoriteButton.widthAnchor constraintEqualToConstant:MFS(48)],
-        [self.favoriteButton.heightAnchor constraintEqualToConstant:MFS(40)],
+        /* ♡ 爱心：与播放键同一行，靠右 */
+        [self.favoriteButton.trailingAnchor constraintEqualToAnchor:self.repeatButton.leadingAnchor constant:-MFS(14)],
+        [self.favoriteButton.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
+        [self.favoriteButton.widthAnchor constraintEqualToConstant:MFS(52)],
+        [self.favoriteButton.heightAnchor constraintEqualToConstant:MFS(52)],
 
-        [self.repeatButton.topAnchor constraintEqualToAnchor:play.bottomAnchor constant:MFS(6)],
-        [self.repeatButton.centerXAnchor constraintEqualToAnchor:v.centerXAnchor constant:MFS(40)],
-        [self.repeatButton.widthAnchor constraintEqualToConstant:MFS(48)],
-        [self.repeatButton.heightAnchor constraintEqualToConstant:MFS(40)],
+        /* ↻ 循环：最右 */
+        [self.repeatButton.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-MFS(50)],
+        [self.repeatButton.centerYAnchor constraintEqualToAnchor:play.centerYAnchor],
+        [self.repeatButton.widthAnchor constraintEqualToConstant:MFS(52)],
+        [self.repeatButton.heightAnchor constraintEqualToConstant:MFS(52)],
     ]];
 
     self.lastRenderedTitle = title;
@@ -5150,7 +5121,8 @@ static dispatch_source_t sGCDPollTimer = NULL;
     tb.delegate = self;
     /* 11142672：歌词行高加大，车机屏上更好读 */
     /* 11142678：行高 52 -> 44，同样高度多显示一行 */
-    tb.rowHeight = MFS(44.0);
+    /* 11142685：行高 44 -> 38，同样高度多显示一行 */
+    tb.rowHeight = MFS(38.0);
     tb.backgroundColor = [UIColor clearColor];      /* 透出背景图 */
     tb.separatorColor = [UIColor clearColor];
     tb.showsVerticalScrollIndicator = NO;
@@ -5255,7 +5227,7 @@ static dispatch_source_t sGCDPollTimer = NULL;
          * 原来硬编码 22/18，小屏会溢出、大屏偏小。
          * 当前行比其它行大 3pt，突出高亮。
          */
-        cell.textLabel.font = isCurrent ? MFFont(21.0) : MFFont(18.0);
+        cell.textLabel.font = isCurrent ? MFFont(19.0) : MFFont(16.0);
         cell.textLabel.textColor = isCurrent
             ? MFCarPlayAccentColor()                       /* 当前行：浅蓝高亮 */
             : [UIColor colorWithRed:0.75 green:0.75 blue:0.78 alpha:1.0];
