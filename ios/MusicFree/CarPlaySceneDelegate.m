@@ -5072,8 +5072,11 @@ static dispatch_source_t sGCDPollTimer = NULL;
     UIView *v = touch.view;
     /* 按钮、表格、进度条上不响应 */
     while (v && v != self.view) {
+            /* 11142697：歌词表允许手势通过（修复切不回封面） */
+            if (v == self.lyricTable) {
+                return YES;
+            }
         if ([v isKindOfClass:[UIButton class]] ||
-            [v isKindOfClass:[UITableView class]] ||
             [v isKindOfClass:[UITextField class]] ||
             [v isKindOfClass:[UIProgressView class]] ||
             [v isKindOfClass:[UISlider class]]) {
@@ -5211,8 +5214,9 @@ static dispatch_source_t sGCDPollTimer = NULL;
          * 返回按钮在 top=14、高 44，即占到 y=58
          * 歌词表从 y=64 开始才不会挡住它
          */
-        [tb.topAnchor constraintEqualToAnchor:self.artistLabel.bottomAnchor constant:MFS(14)],
-        [tb.bottomAnchor constraintEqualToAnchor:self.repeatButton.topAnchor constant:-MFS(10)],
+        /* 11142697：歌词表与封面完全重合（历史版 8232abf3 的正确做法） */
+        [tb.topAnchor constraintEqualToAnchor:self.coverView.topAnchor],
+        [tb.bottomAnchor constraintEqualToAnchor:self.coverView.bottomAnchor],
         [tb.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:MFS(40)],
         [tb.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-MFS(40)],
     ]];

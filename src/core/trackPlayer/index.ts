@@ -40,6 +40,7 @@ import minDistance from "@/utils/minDistance";
 import { IPluginManager } from "@/types/core/pluginManager";
 import { ImgAsset } from "@/constants/assetsConst";
 import { resolveImportedAssetOrPath } from "@/utils/fileUtils";
+import { getPlayUrlDirect } from "../playUrlProvider";
 
 
 
@@ -189,57 +190,24 @@ class TrackPlayer extends EventEmitter<{
             ReactNativeTrackPlayer.addEventListener(
                 Event.PlaybackActiveTrackChanged,
                 async evt => {
-                    /*
-                     * ================================================================
-                     * 11142694：自动跳歌死循环保护
-                     * ================================================================
-                     *
-                     * 日志证据（19:48:46 ~ 19:49:05）：
-                     *   [CTRL] recv "next"   只出现 1 次
-                     *   [STATE] apply        出现 7 次（恋人/谁/孤单大街/夜色/秋天不回来/...）
-                     *   每次都是 pos=0/0 playing=0
-                     *
-                     * 机制：
-                     *   setTrackSource 队列 = [真实歌曲, fakeAudioUrl]
-                     *   音频加载失败(duration=0) -> 瞬间"播完" -> 自动进 index 1
-                     *   -> 本回调触发 -> skipToNext() -> 下一首同样失败 -> 死循环
-                     *
-                     * 修法：连续 3 次"加载即结束"就停下来，不再自动跳
-                     */
                     if (
                         evt.index === 1 &&
                         evt.lastIndex === 0 &&
                         evt.track?.url === TrackPlayer.fakeAudioUrl
                     ) {
-                        // 检查上一首是否真的播过（duration>0）
-                        let lastDuration = 0;
-                        try {
-                            const pg = await ReactNativeTrackPlayer.getProgress();
-                            lastDuration = pg?.duration ?? 0;
-                        } catch (e) { /* ignore */ }
-                        if (!(lastDuration > 0)) {
-                            const g: any = globalThis as any;
-                            g.__mfZeroDurStreak = (g.__mfZeroDurStreak ?? 0) + 1;
-                            const n = g.__mfZeroDurStreak;
+                        /* 11142696：死循环保护（只加不改） */
+                        let _ld = 0;
+                        try { const _pg = await ReactNativeTrackPlayer.getProgress(); _ld = _pg?.duration ?? 0; } catch (e) {}
+                        if (!(_ld > 0)) {
+                            const _g: any = globalThis as any;
+                            _g.__mfZDS = (_g.__mfZDS ?? 0) + 1;
+                            const _n = _g.__mfZDS;
                             try {
-                                const emit = typeof g.__MF_LOG__ === "function"
-                                    ? g.__MF_LOG__
-                                    : (m: string) => NativeModules?.CarPlayBridge?.setJsLog?.(m);
-                                emit(`[AUTOSKIP] blocked: duration=0 streak=${n}/3`);
-                            } catch (e) { /* ignore */ }
-                            if (n >= 3) {
-                                /* 连跳 3 次都是空音轨 -> 停止自动跳，避免无限循环 */
-                                return;
-                            }
-                        } else {
-                            (globalThis as any).__mfZeroDurStreak = 0;
-                        }
-                    }
-                    if (
-                        evt.index === 1 &&
-                        evt.lastIndex === 0 &&
-                        evt.track?.url === TrackPlayer.fakeAudioUrl
-                    ) {
+                                const _emit = typeof _g.__MF_LOG__ === "function" ? _g.__MF_LOG__ : (m: string) => NativeModules?.CarPlayBridge?.setJsLog?.(m);
+                                _emit("[AUTOSKIP] blocked: duration=0 streak=" + _n + "/3");
+                            } catch (e) {}
+                            if (_n >= 3) { return; }
+                        } else { (globalThis as any).__mfZDS = 0; }
                         trace("队列末尾，播放下一首");
                         this.emit(TrackPlayerEvents.PlayEnd);
                         if (
@@ -528,21 +496,59 @@ class TrackPlayer extends EventEmitter<{
             );
             // 5.3 插件返回音源
             let source: IPlugin.IMediaSourceResult | null = null;
-            for (let quality of qualityOrder) {
-                if (this.isCurrentMusic(musicItem)) {
-                    source =
-                        (await plugin?.methods?.getMediaSource(
-                            musicItem,
-                            quality,
-                        )) ?? null;
-                    // 5.3.1 获取到真实源
-                    if (source) {
-                        this.setQuality(quality);
-                        break;
+
+            /**
+             * 5.2.5 先用自研接口取播放链接
+             *
+             * 背景：实测 padao 的网易云 / QQ 插件 getMediaSource 全部返回
+             *   「聚合取链失败：所有可用源均未取得播放链接」，
+             * 但平台自己的公开接口是通的（网易云实测拿到 audio/mpeg）。
+             *
+             * 所以这里优先走 App 自研的取链，失败再退回插件。
+             */
+            try {
+                const direct = await getPlayUrlDirect(
+                    {
+                        id: musicItem.id,
+                        platform: musicItem.platform,
+                        // QQ 插件 search 返回的 musicItem 里带原生 songmid，
+                        // 优先用它（id 可能是 "qq_xxx" 带前缀形态）
+                        songmid: (musicItem as any)?.songmid,
+                    },
+                    qualityOrder[0] ?? "standard",
+                );
+                if (direct?.url) {
+                    source = {
+                        url: direct.url,
+                        quality: (direct.quality ?? "standard") as any,
+                    } as IPlugin.IMediaSourceResult;
+                    this.setQuality((direct.quality ?? "standard") as any);
+                    trace(
+                        `自研取链成功 [${direct.via}] ${String(direct.url).slice(0, 60)}`,
+                    );
+                }
+            } catch (e) {
+                trace(`自研取链异常: ${(e as any)?.message ?? e}`);
+            }
+
+            // 5.3 插件兜底（自研失败时才走）
+            if (!source) {
+                for (let quality of qualityOrder) {
+                    if (this.isCurrentMusic(musicItem)) {
+                        source =
+                            (await plugin?.methods?.getMediaSource(
+                                musicItem,
+                                quality,
+                            )) ?? null;
+                        // 5.3.1 获取到真实源
+                        if (source) {
+                            this.setQuality(quality);
+                            break;
+                        }
+                    } else {
+                        // 5.3.2 已经切换到其他歌曲了，
+                        return;
                     }
-                } else {
-                    // 5.3.2 已经切换到其他歌曲了，
-                    return;
                 }
             }
 
@@ -849,46 +855,7 @@ class TrackPlayer extends EventEmitter<{
         if (!clonedTrack) {
             return;
         }
-        /*
-         * ================================================================
-         * 11142693：诊断日志 —— 打印真实播放 URL
-         * ================================================================
-         * 目的：确认 duration=0 的根因
-         *   - URL 是否为空
-         *   - 是否 m3u8/HLS
-         *   - 是否 http/https
-         * 已排除：ATS（NSAllowsArbitraryLoads=True）
-         */
-        try {
-            const anyTrack: any = clonedTrack;
-            const rawUrl = anyTrack?.url;
-            const urlStr = typeof rawUrl === "string" ? rawUrl : String(rawUrl ?? "");
-            const head = urlStr.length > 160 ? urlStr.slice(0, 160) + "..." : urlStr;
-            const msg =
-                "[TRACK] url=" + (head || "(EMPTY)") +
-                " | type=" + (anyTrack?.type ?? "-") +
-                " | dur=" + (anyTrack?.duration ?? "-") +
-                " | len=" + urlStr.length +
-                " | autoPlay=" + autoPlay;
-            /* 11142694：优先用全局日志函数（NativeModules 在该上下文可能不可用） */
-            const g: any = globalThis as any;
-            const emit = (m: string) => {
-                if (typeof g.__MF_LOG__ === "function") {
-                    g.__MF_LOG__(m);
-                    return;
-                }
-                try {
-                    NativeModules?.CarPlayBridge?.setJsLog?.(m);
-                } catch (e) { /* ignore */ }
-            };
-            emit(msg);
-            if (urlStr.length > 160) {
-                emit("[TRACK] url_tail=" + urlStr.slice(-80));
-            }
-        } catch (e) {
-            /* 日志失败不影响播放 */
-        }
-
+        try { const _u = String((clonedTrack as any)?.url ?? ""); const _g: any = globalThis as any; const _e = (m: string) => { if (typeof _g.__MF_LOG__ === "function") { _g.__MF_LOG__(m); } else { try { NativeModules?.CarPlayBridge?.setJsLog?.(m); } catch (err) {} } }; _e("[TRACK] url=" + (_u || "(EMPTY)") + " | dur=" + String((clonedTrack as any)?.duration ?? "-") + " | len=" + _u.length); } catch (e) {}
         await ReactNativeTrackPlayer.setQueue([clonedTrack, this.getFakeNextTrack()]);
         PersistStatus.set("music.musicItem", track as IMusic.IMusicItem);
         PersistStatus.set("music.progress", 0);
