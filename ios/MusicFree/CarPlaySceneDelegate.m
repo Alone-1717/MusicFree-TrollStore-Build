@@ -331,6 +331,89 @@ static UIColor *MFCarPlayAccentColor(void) {
  *   2) 改成浅蓝 + 「← 返回」文字（对齐用户图五）
  *   3) 尺寸放大到 100x44，车机触摸友好
  */
+/*
+ * ================================================================
+ * 11142699：绘制"暂停"图标（两根圆角竖条）
+ * ================================================================
+ * 用户要求：不要 emoji 字符，要图片里那种两竖线图形。
+ * 做法：用 CAShapeLayer 在按钮上叠一个自定义绘制层。
+ *   竖条宽度 = 按钮宽度 * 0.18
+ *   竖条高度 = 按钮高度 * 0.52
+ *   两竖条间距 = 宽度 * 0.16
+ *   颜色：白色，圆角 = 竖条宽度 * 0.18
+ */
+static void MFApplyPauseIcon(UIButton *btn) {
+    if (!btn) {
+        return;
+    }
+    for (CALayer *l in [btn.layer.sublayers copy]) {
+        if ([l.name isEqualToString:@"mfPauseLayer"]) {
+            [l removeFromSuperlayer];
+        }
+    }
+    CGFloat w = btn.bounds.size.width;
+    CGFloat h = btn.bounds.size.height;
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+    CGFloat barW = w * 0.18;
+    CGFloat barH = h * 0.52;
+    CGFloat gap = w * 0.16;
+    CGFloat radius = barW * 0.18;
+    CGFloat totalW = barW * 2 + gap;
+    CGFloat x0 = (w - totalW) / 2.0;
+    CGFloat y0 = (h - barH) / 2.0;
+
+    CAShapeLayer *layer = [CAShapeLayer layer];
+    layer.name = @"mfPauseLayer";
+    layer.fillColor = (__bridge CGColorRef)[UIColor whiteColor].CGColor;
+
+    UIBezierPath *path = [UIBezierPath bezierPath];
+    UIBezierPath *left = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(x0, y0, barW, barH)
+                                                       cornerRadius:radius];
+    UIBezierPath *right = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(x0 + barW + gap, y0, barW, barH)
+                                                        cornerRadius:radius];
+    [path appendPath:left];
+    [path appendPath:right];
+    layer.path = path.CGPath;
+    [btn.layer addSublayer:layer];
+}
+
+/*
+ * 11142699：绘制"播放"图标（三角形，同样不用 emoji）
+ */
+static void MFApplyPlayIcon(UIButton *btn) {
+    if (!btn) {
+        return;
+    }
+    for (CALayer *l in [btn.layer.sublayers copy]) {
+        if ([l.name isEqualToString:@"mfPauseLayer"]) {
+            [l removeFromSuperlayer];
+        }
+    }
+    CGFloat w = btn.bounds.size.width;
+    CGFloat h = btn.bounds.size.height;
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+    CGFloat triW = w * 0.42;
+    CGFloat triH = h * 0.52;
+    CGFloat cx = w / 2.0 + triW * 0.08;   /* 三角形视觉重心偏右一点 */
+    CGFloat cy = h / 2.0;
+
+    CAShapeLayer *layer = [CAShapeLayer layer];
+    layer.name = @"mfPauseLayer";
+    layer.fillColor = (__bridge CGColorRef)[UIColor whiteColor].CGColor;
+
+    UIBezierPath *path = [UIBezierPath bezierPath];
+    [path moveToPoint:CGPointMake(cx - triW / 2.0, cy - triH / 2.0)];
+    [path addLineToPoint:CGPointMake(cx - triW / 2.0, cy + triH / 2.0)];
+    [path addLineToPoint:CGPointMake(cx + triW / 2.0, cy)];
+    [path closePath];
+    layer.path = path.CGPath;
+    [btn.layer addSublayer:layer];
+}
+
 static void MFAddBackButton(UIViewController *vc) {
     UIButton *b = [UIButton buttonWithType:0];
     [b setTitle:@"\u2190 \u8fd4\u56de" forState:0];   /* ← 返回 */
@@ -4208,6 +4291,10 @@ static dispatch_source_t sGCDPollTimer = NULL;
     UIButton *play = [self makeControlButton:@"▶"  action:@selector(onPlayPause)];
     /* 11142661：保存引用，供 JS 回传状态时切换图标 */
     self.playPauseButton = play;
+    /* 11142699：初始绘制播放图标（尺寸在 runloop 后才有） */
+    dispatch_async(dispatch_get_main_queue(), ^{
+        MFApplyPlayIcon(play);
+    });
     UIButton *next = [self makeControlButton:@"▶▶" action:@selector(onNext)];
 
     /* 进度文字 */
@@ -4951,9 +5038,13 @@ static dispatch_source_t sGCDPollTimer = NULL;
          *   isPlaying=1 -> 显示 ⏸ (U+23F8 两竖线，表示"点它能暂停")
          *   isPlaying=0 -> 显示 ▶ (U+25B6 三角形，表示"点它能播放")
          */
-        unichar code = isPlaying.boolValue ? 0x23F8 : 0x25B6;
-        NSString *sym = [NSString stringWithCharacters:&code length:1];
-        [self.playPauseButton setTitle:sym forState:0];
+        /* 11142699：改用自绘图形，不用 emoji 字符 */
+        [self.playPauseButton setTitle:@"" forState:0];
+        if (isPlaying.boolValue) {
+            MFApplyPauseIcon(self.playPauseButton);
+        } else {
+            MFApplyPlayIcon(self.playPauseButton);
+        }
     }
 
     /* 爱心 */

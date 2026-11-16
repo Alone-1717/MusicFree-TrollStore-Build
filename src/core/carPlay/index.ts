@@ -409,7 +409,34 @@ async function handleControl(action: string) {
                         await TrackPlayer.pause();
                         logToNative("toggle -> pause");
                     } else {
-                        await TrackPlayer.play();
+                        /* 11142699：诊断 play() 为什么不生效 */
+                        let stBefore = "?", posBefore = 0, durBefore = 0;
+                        try {
+                            const sb: any = await (ReactNativeTrackPlayer as any).getPlaybackState?.();
+                            stBefore = String(sb?.state ?? "?");
+                            const pg: any = await TrackPlayer.getProgress();
+                            posBefore = pg?.position ?? 0;
+                            durBefore = pg?.duration ?? 0;
+                        } catch (e) { /* ignore */ }
+                        logToNative(`[TOGGLE] before play: state=${stBefore} pos=${posBefore.toFixed(2)} dur=${durBefore.toFixed(2)}`);
+
+                        let playErr = "";
+                        try {
+                            await TrackPlayer.play();
+                        } catch (e: any) {
+                            playErr = String(e?.message ?? e);
+                        }
+
+                        await new Promise(r => setTimeout(r, 800));
+
+                        let stAfter = "?", posAfter = 0;
+                        try {
+                            const sa: any = await (ReactNativeTrackPlayer as any).getPlaybackState?.();
+                            stAfter = String(sa?.state ?? "?");
+                            const pg2: any = await TrackPlayer.getProgress();
+                            posAfter = pg2?.position ?? 0;
+                        } catch (e) { /* ignore */ }
+                        logToNative(`[TOGGLE] after play: state=${stAfter} pos=${posAfter.toFixed(2)} err="${playErr}"`);
                         logToNative("toggle -> play");
                     }
                 }
