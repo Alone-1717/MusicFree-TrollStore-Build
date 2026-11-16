@@ -361,6 +361,7 @@ async function handleControl(action: string) {
                 await TrackPlayer.pause();
                 break;
             case "next":
+                logToNative(`[SKIP] next before: ${TrackPlayer.currentMusic?.title ?? "?"}`);
                 await TrackPlayer.skipToNext();
                 /*
                  * 11142680：切歌后主动推送新曲目信息。
@@ -444,6 +445,7 @@ async function handleControl(action: string) {
 
             case "favorite":
                 toggleFavoriteForCurrent();
+                logToNative(`[FAV] after toggle isFavorite=${isCurrentFavorite(TrackPlayer.currentMusic) ? 1 : 0}`);
                 break;
 
             case "repeat":
@@ -728,6 +730,7 @@ function isCurrentFavorite(music: any): boolean {
 }
 
 async function pushNowPlayingState() {
+    logToNative(`[STATE] -> native title=${music?.title ?? "-"} pos=${progress.toFixed(2)}/${duration.toFixed(2)} playing=${isPlaying}`);
     if (!NativeBridge?.setNowPlayingState) {
         return;
     }
@@ -958,6 +961,7 @@ export function setupCarPlay() {
             }
 
             /* 签名：曲目 + 秒数 + 播放态 */
+            logToNative(`[STATE] tick key=${key} pos=${progress.toFixed(2)} playing=${isPlaying}`);
             const sig = `${key}|${progress}|${isPlaying}`;
             if (sig === lastStateSig) {
                 return;

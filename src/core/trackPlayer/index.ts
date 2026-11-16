@@ -1,4 +1,30 @@
 import { NativeModules } from "react-native";
+
+/*
+ * ================================================================
+ * 11142700：统一诊断日志函数
+ * ================================================================
+ * trackPlayer 里原来一条日志都没有，导致 play() 不生效时完全查不出。
+ * 这里挂一个不受模块上下文限制的日志出口。
+ */
+function mfDiag(msg: string): void {
+    try {
+        const g: any = globalThis as any;
+        if (typeof g.__MF_LOG__ === "function") {
+            g.__MF_LOG__("[TP] " + msg);
+            return;
+        }
+        const b: any = NativeModules?.CarPlayBridge;
+        if (b && typeof b.setJsLog === "function") {
+            b.setJsLog("[TP] " + msg);
+            return;
+        }
+        // 最后兜底
+        console.log("[TP] " + msg);
+    } catch (e) {
+        /* 日志失败绝不影响播放 */
+    }
+}
 import { getCurrentDialog, showDialog } from "@/components/dialogs/useDialog";
 import {
     internalFakeSoundKey,
@@ -414,6 +440,7 @@ class TrackPlayer extends EventEmitter<{
         forcePlay?: boolean,
     ): Promise<void> {
         try {
+            mfDiag("play() ENTER track=" + String(musicItem?.title ?? this.currentMusic?.title ?? "(null)") + " force=" + String(forcePlay ?? false));
             // 如果不传参，默认是播放当前音乐
             if (!musicItem) {
                 musicItem = this.currentMusic;
@@ -454,9 +481,10 @@ class TrackPlayer extends EventEmitter<{
                         // 2.1.1 强制重新开始
                         await this.seekTo(0);
                     }
-                    const currentState = (
-                        await ReactNativeTrackPlayer.getPlaybackState()
-                    ).state;
+                    let _cs: any = null;
+                    try { _cs = await ReactNativeTrackPlayer.getPlaybackState(); } catch (e) { mfDiag("getPlaybackState ERR: " + String((e as any)?.message ?? e)); }
+                    const currentState = _cs?.state;
+                    mfDiag("play(): currentState=" + String(currentState));
                     if (currentState === State.Stopped) {
                         await this.setTrackSource(currentTrack);
                     }
@@ -478,6 +506,7 @@ class TrackPlayer extends EventEmitter<{
 
             // 4. 更新列表状态和当前音乐
             this.setCurrentMusic(musicItem);
+            mfDiag("play(): NOT loaded -> 走 setQueue 分支 (url=proposedAudioUrl)");
             await ReactNativeTrackPlayer.setQueue([{
                 ...musicItem,
                 url: TrackPlayer.proposedAudioUrl,
@@ -534,7 +563,8 @@ class TrackPlayer extends EventEmitter<{
             // 5.3 插件兜底（自研失败时才走）
             if (!source) {
                 for (let quality of qualityOrder) {
-                    if (this.isCurrentMusic(musicItem)) {
+                    mfDiag("play(): isCurrentMusic=true -> 走已加载分支");
+                if (this.isCurrentMusic(musicItem)) {
                         source =
                             (await plugin?.methods?.getMediaSource(
                                 musicItem,
@@ -856,11 +886,18 @@ class TrackPlayer extends EventEmitter<{
             return;
         }
         try { const _u = String((clonedTrack as any)?.url ?? ""); const _g: any = globalThis as any; const _e = (m: string) => { if (typeof _g.__MF_LOG__ === "function") { _g.__MF_LOG__(m); } else { try { NativeModules?.CarPlayBridge?.setJsLog?.(m); } catch (err) {} } }; _e("[TRACK] url=" + (_u || "(EMPTY)") + " | dur=" + String((clonedTrack as any)?.duration ?? "-") + " | len=" + _u.length); } catch (e) {}
+        mfDiag("setTrackSource: url=" + String((clonedTrack as any)?.url ?? "").slice(0, 80)
+               + " dur=" + String((clonedTrack as any)?.duration ?? "-")
+               + " autoPlay=" + autoPlay);
+        mfDiag("setTrackSource: about to setQueue [track, fakeNext]");
         await ReactNativeTrackPlayer.setQueue([clonedTrack, this.getFakeNextTrack()]);
+        mfDiag("setTrackSource: setQueue OK");
         PersistStatus.set("music.musicItem", track as IMusic.IMusicItem);
         PersistStatus.set("music.progress", 0);
         if (autoPlay) {
+            mfDiag("setTrackSource: calling play() (autoPlay)");
             await ReactNativeTrackPlayer.play();
+            mfDiag("setTrackSource: play() returned");
         }
     }
 

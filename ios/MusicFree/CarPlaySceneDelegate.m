@@ -377,6 +377,7 @@ static void MFApplyPauseIcon(UIButton *btn) {
     [path appendPath:right];
     layer.path = path.CGPath;
     [btn.layer addSublayer:layer];
+    MFCarPlayLogBoth(@"[ICON] pause icon applied w=%.1f h=%.1f", w, h);
 }
 
 /*
@@ -412,6 +413,7 @@ static void MFApplyPlayIcon(UIButton *btn) {
     [path closePath];
     layer.path = path.CGPath;
     [btn.layer addSublayer:layer];
+    MFCarPlayLogBoth(@"[ICON] play icon applied w=%.1f h=%.1f", w, h);
 }
 
 static void MFAddBackButton(UIViewController *vc) {
@@ -4721,6 +4723,7 @@ static dispatch_source_t sGCDPollTimer = NULL;
 }
 
 - (void)onPlayPause {
+    MFCarPlayLogBoth(@"[ACTION] PLAYPAUSE tapped");
     NSString *cur = self.playPauseButton.titleLabel.text ?: @"?";
     MFCarPlayLogBoth(@"[ACTION] play/pause tapped (btn=%@)", cur);
     [MFCarPlayBridge emitControl:@"toggle"];
@@ -4997,6 +5000,9 @@ static dispatch_source_t sGCDPollTimer = NULL;
         ? state[@"duration"] : nil;
     NSNumber *isPlaying = [state[@"isPlaying"] isKindOfClass:[NSNumber class]]
         ? state[@"isPlaying"] : nil;
+    MFCarPlayLogBoth(@"[STATE] applyState isPlaying=%@ (class=%@)",
+          isPlaying ?: @"nil",
+          isPlaying ? NSStringFromClass([isPlaying class]) : @"nil");
 
     double cur = prog ? prog.doubleValue : 0;
     double total = dur ? dur.doubleValue : 0;
@@ -5032,6 +5038,14 @@ static dispatch_source_t sGCDPollTimer = NULL;
     }
 
     /* 播放/暂停图标 */
+    if (self.playPauseButton) {
+        int cur = isPlaying ? isPlaying.intValue : -1;
+        static int sLastPlaying = -2;
+        if (cur != sLastPlaying) {
+            sLastPlaying = cur;
+            MFCarPlayLogBoth(@"[ICON] isPlaying CHANGED -> %d (apply icon)", cur);
+        }
+    }
     if (isPlaying && self.playPauseButton) {
         /*
          * 11142688：修正图标含义
