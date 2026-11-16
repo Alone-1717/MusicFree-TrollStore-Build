@@ -1,3 +1,4 @@
+import { NativeModules } from "react-native";
 import { getCurrentDialog, showDialog } from "@/components/dialogs/useDialog";
 import {
     internalFakeSoundKey,
@@ -39,7 +40,6 @@ import minDistance from "@/utils/minDistance";
 import { IPluginManager } from "@/types/core/pluginManager";
 import { ImgAsset } from "@/constants/assetsConst";
 import { resolveImportedAssetOrPath } from "@/utils/fileUtils";
-import { getPlayUrlDirect, isFullAudio } from "../playUrlProvider";
 
 
 
@@ -482,71 +482,21 @@ class TrackPlayer extends EventEmitter<{
             );
             // 5.3 插件返回音源
             let source: IPlugin.IMediaSourceResult | null = null;
-
-            /**
-             * 5.2.5 先用自研接口取播放链接
-             *
-             * 背景：实测 padao 的网易云 / QQ 插件 getMediaSource 全部返回
-             *   「聚合取链失败：所有可用源均未取得播放链接」，
-             * 但平台自己的第三方通道（QQ s01s / 网易云 星海+oiapi）是通的，
-             * 且每个候选都经过 isFullAudio 过滤（挡掉 30 秒试听片段）。
-             *
-             * 所以这里优先走 App 自研的取链，失败再退回插件。
-             */
-            try {
-                const direct = await getPlayUrlDirect(
-                    {
-                        id: musicItem.id,
-                        platform: musicItem.platform,
-                        // QQ 插件 search 返回的 musicItem 里带原生 songmid，
-                        // 优先用它（id 可能是 "qq_xxx" 带前缀形态）
-                        songmid: (musicItem as any)?.songmid,
-                    },
-                    qualityOrder[0] ?? "standard",
-                );
-                if (direct?.url) {
-                    source = {
-                        url: direct.url,
-                        quality: (direct.quality ?? "standard") as any,
-                    } as IPlugin.IMediaSourceResult;
-                    this.setQuality((direct.quality ?? "standard") as any);
-                    trace(
-                        `自研取链成功 [${direct.via}] ${String(direct.url).slice(0, 60)}`,
-                    );
-                }
-            } catch (e) {
-                trace(`自研取链异常: ${(e as any)?.message ?? e}`);
-            }
-
-            // 5.3 插件兜底（自研失败时才走）
-            if (!source) {
-                for (let quality of qualityOrder) {
-                    if (this.isCurrentMusic(musicItem)) {
-                        const candidate =
-                            (await plugin?.methods?.getMediaSource(
-                                musicItem,
-                                quality,
-                            )) ?? null;
-                        // 5.3.1 获取到真实源；但要挡掉 30 秒试听片段
-                        //      （网易云 eapi 匿名通道会明确返回 trial clip 30s，
-                        //       某些第三方通道也可能给 <1MB 的片段）
-                        if (candidate?.url) {
-                            const full = await isFullAudio(candidate.url);
-                            if (!full) {
-                                trace(
-                                    `插件返回试听片段，跳过 quality=${quality}`,
-                                );
-                                // 继续尝试下一音质，而不是拿片段去播
-                                continue;
-                            }
-                            source = candidate;
-                            this.setQuality(quality);
-                            break;
-                        }
-                    } else {
-                        // 5.3.2 已经切换到其他歌曲了，
-                        return;
+            for (let quality of qualityOrder) {
+                if (this.isCurrentMusic(musicItem)) {
+                    source =
+                        (await plugin?.methods?.getMediaSource(
+                            musicItem,
+                            quality,
+                        )) ?? null;
+                    // 5.3.1 获取到真实源
+                    if (source) {
+                        this.setQuality(quality);
+                        break;
                     }
+                } else {
+                    // 5.3.2 已经切换到其他歌曲了，
+                    return;
                 }
             }
 
@@ -853,6 +803,35 @@ class TrackPlayer extends EventEmitter<{
         if (!clonedTrack) {
             return;
         }
+        /*
+         * ================================================================
+         * 11142693：诊断日志 —— 打印真实播放 URL
+         * ================================================================
+         * 目的：确认 duration=0 的根因
+         *   - URL 是否为空
+         *   - 是否 m3u8/HLS
+         *   - 是否 http/https
+         * 已排除：ATS（NSAllowsArbitraryLoads=True）
+         */
+        try {
+            const anyTrack: any = clonedTrack;
+            const rawUrl = anyTrack?.url;
+            const urlStr = typeof rawUrl === "string" ? rawUrl : String(rawUrl ?? "");
+            const head = urlStr.length > 160 ? urlStr.slice(0, 160) + "..." : urlStr;
+            const msg =
+                "[TRACK] url=" + (head || "(EMPTY)") +
+                " | type=" + (anyTrack?.type ?? "-") +
+                " | dur=" + (anyTrack?.duration ?? "-") +
+                " | len=" + urlStr.length +
+                " | autoPlay=" + autoPlay;
+            NativeModules?.CarPlayBridge?.setJsLog?.(msg);
+            if (urlStr.length > 160) {
+                NativeModules?.CarPlayBridge?.setJsLog?.("[TRACK] url_tail=" + urlStr.slice(-80));
+            }
+        } catch (e) {
+            /* 日志失败不影响播放 */
+        }
+
         await ReactNativeTrackPlayer.setQueue([clonedTrack, this.getFakeNextTrack()]);
         PersistStatus.set("music.musicItem", track as IMusic.IMusicItem);
         PersistStatus.set("music.progress", 0);
